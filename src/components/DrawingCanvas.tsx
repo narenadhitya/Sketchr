@@ -94,6 +94,20 @@ const doFloodFill = (ctx: CanvasRenderingContext2D, startX: number, startY: numb
   ctx.putImageData(imageData, 0, 0);
 };
 
+const generateThumbnail = (sourceCanvas: HTMLCanvasElement) => {
+  const thumbCanvas = document.createElement('canvas');
+  thumbCanvas.width = 320;
+  thumbCanvas.height = 180;
+  const ctx = thumbCanvas.getContext('2d');
+  if (ctx) {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, 320, 180);
+    ctx.drawImage(sourceCanvas, 0, 0, 320, 180);
+    return thumbCanvas.toDataURL('image/jpeg', 0.8);
+  }
+  return undefined;
+};
+
 const DrawingCanvas: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const onionSkinRef = useRef<HTMLCanvasElement>(null);
@@ -129,7 +143,10 @@ const DrawingCanvas: React.FC = () => {
                fontFamily: fontFamily
              });
              if (canvasRef.current && currentFrameIndex === 0) {
-               setTimeout(() => useStore.getState().setCurrentThumbnail(canvasRef.current!.toDataURL('image/jpeg', 0.2)), 50);
+               setTimeout(() => {
+                 const thumb = generateThumbnail(canvasRef.current!);
+                 if (thumb) useStore.getState().setCurrentThumbnail(thumb);
+               }, 50);
              }
            }
            setTextEditor(null);
@@ -333,8 +350,8 @@ const DrawingCanvas: React.FC = () => {
       if (canvasRef.current && currentFrameIndex === 0) {
         setTimeout(() => {
           if (canvasRef.current) {
-            const thumb = canvasRef.current.toDataURL('image/jpeg', 0.2);
-            useStore.getState().setCurrentThumbnail(thumb);
+            const thumb = generateThumbnail(canvasRef.current);
+            if (thumb) useStore.getState().setCurrentThumbnail(thumb);
           }
         }, 50);
       }
@@ -378,8 +395,8 @@ const DrawingCanvas: React.FC = () => {
     setCurrentStroke(null);
 
     if (canvasRef.current && currentFrameIndex === 0) {
-      const thumb = canvasRef.current.toDataURL('image/jpeg', 0.2);
-      useStore.getState().setCurrentThumbnail(thumb);
+      const thumb = generateThumbnail(canvasRef.current);
+      if (thumb) useStore.getState().setCurrentThumbnail(thumb);
     }
   };
 

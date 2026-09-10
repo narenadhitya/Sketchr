@@ -6,12 +6,16 @@ const Topbar: React.FC = () => {
   const projectName = useStore(state => state.projectName);
   const setProjectName = useStore(state => state.setProjectName);
   const setView = useStore(state => state.setView);
+  const saveCurrentProject = useStore(state => state.saveCurrentProject);
 
   return (
     <div className="flex justify-between items-center px-4 py-4 z-10 pointer-events-none">
       <div className="flex items-center gap-4 pointer-events-auto">
         <button 
-          onClick={() => setView('home')}
+          onClick={() => {
+            saveCurrentProject();
+            setView('home');
+          }}
           className="p-2 rounded-full hover:bg-black/5 cursor-pointer"
         >
           <ChevronLeft size={24} className="text-gray-500" />
