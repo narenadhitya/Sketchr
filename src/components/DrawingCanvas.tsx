@@ -2,6 +2,98 @@ import React, { useRef, useEffect, useState } from 'react';
 import { useStore } from '../store';
 import type { Stroke, Point } from '../store';
 
+const hexToRgba = (hex: string, alpha: number) => {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return [r, g, b, Math.floor(alpha * 255)];
+};
+
+const doFloodFill = (ctx: CanvasRenderingContext2D, startX: number, startY: number, fillColor: string, opacity: number) => {
+  const width = ctx.canvas.width;
+  const height = ctx.canvas.height;
+  
+  // Get image data
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const data = imageData.data;
+  
+  const targetX = Math.floor(startX);
+  const targetY = Math.floor(startY);
+  if (targetX < 0 || targetY < 0 || targetX >= width || targetY >= height) return;
+
+  const startIndex = (targetY * width + targetX) * 4;
+  const startR = data[startIndex];
+  const startG = data[startIndex + 1];
+  const startB = data[startIndex + 2];
+  const startA = data[startIndex + 3];
+
+  const fill = hexToRgba(fillColor, opacity);
+  
+  // If same color, do nothing
+  if (Math.abs(startR - fill[0]) < 5 && Math.abs(startG - fill[1]) < 5 && Math.abs(startB - fill[2]) < 5 && Math.abs(startA - fill[3]) < 5) {
+    return;
+  }
+
+  const matchColor = (index: number) => {
+    return Math.abs(data[index] - startR) < 30 &&
+           Math.abs(data[index+1] - startG) < 30 &&
+           Math.abs(data[index+2] - startB) < 30 &&
+           Math.abs(data[index+3] - startA) < 30;
+  };
+
+  const stack = [[targetX, targetY]];
+  const visited = new Uint8Array(width * height);
+
+  while (stack.length > 0) {
+    const [x, y] = stack.pop()!;
+    let currentX = x;
+    let pixelPos = (y * width + currentX) * 4;
+
+    while (currentX >= 0 && matchColor(pixelPos)) {
+      currentX--;
+      pixelPos -= 4;
+    }
+    currentX++;
+    pixelPos += 4;
+    
+    let spanAbove = false;
+    let spanBelow = false;
+
+    while (currentX < width && matchColor(pixelPos)) {
+      const vIdx = y * width + currentX;
+      visited[vIdx] = 1;
+      
+      data[pixelPos] = fill[0];
+      data[pixelPos+1] = fill[1];
+      data[pixelPos+2] = fill[2];
+      data[pixelPos+3] = fill[3];
+
+      if (y > 0) {
+        if (!spanAbove && matchColor(pixelPos - width * 4) && !visited[(y - 1) * width + currentX]) {
+          stack.push([currentX, y - 1]);
+          spanAbove = true;
+        } else if (spanAbove && !matchColor(pixelPos - width * 4)) {
+          spanAbove = false;
+        }
+      }
+
+      if (y < height - 1) {
+        if (!spanBelow && matchColor(pixelPos + width * 4) && !visited[(y + 1) * width + currentX]) {
+          stack.push([currentX, y + 1]);
+          spanBelow = true;
+        } else if (spanBelow && !matchColor(pixelPos + width * 4)) {
+          spanBelow = false;
+        }
+      }
+
+      currentX++;
+      pixelPos += 4;
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+};
+
 const DrawingCanvas: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const onionSkinRef = useRef<HTMLCanvasElement>(null);
@@ -21,6 +113,11 @@ const DrawingCanvas: React.FC = () => {
 
   // Helper to draw a stroke
   const drawStroke = (ctx: CanvasRenderingContext2D, stroke: Stroke, layerOpacity: number = 1) => {
+    if (stroke.type === 'bucket') {
+      doFloodFill(ctx, stroke.points[0].x, stroke.points[0].y, stroke.color, layerOpacity);
+      return;
+    }
+
     if (stroke.points.length < 2) return;
     
     // Configure tool styles
@@ -43,14 +140,6 @@ const DrawingCanvas: React.FC = () => {
       ctx.lineWidth = stroke.size;
     }
 
-    if (stroke.type === 'bucket') {
-      ctx.globalAlpha = layerOpacity;
-      ctx.globalCompositeOperation = 'destination-over'; // Put background fill behind strokes
-      ctx.fillStyle = stroke.color;
-      ctx.fillRect(0, 0, 1920, 1080);
-      return;
-    }
-
     ctx.beginPath();
     ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
     for (let i = 1; i < stroke.points.length; i++) {
@@ -67,7 +156,7 @@ const DrawingCanvas: React.FC = () => {
   useEffect(() => {
     const onionCanvas = onionSkinRef.current;
     if (!onionCanvas) return;
-    const ctx = onionCanvas.getContext('2d');
+    const ctx = onionCanvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
 
     ctx.clearRect(0, 0, onionCanvas.width, onionCanvas.height);
@@ -87,7 +176,7 @@ const DrawingCanvas: React.FC = () => {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -123,10 +212,34 @@ const DrawingCanvas: React.FC = () => {
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const coords = getCoordinates(e);
+
+    if (tool === 'bucket') {
+      const newStroke: Stroke = {
+        points: [coords],
+        color: brushColor,
+        size: brushSize,
+        type: tool,
+      };
+      addStroke(newStroke);
+      
+      // Save thumbnail if editing first frame
+      if (canvasRef.current && currentFrameIndex === 0) {
+        // slight timeout to allow react to flush the state change and render
+        setTimeout(() => {
+          if (canvasRef.current) {
+            const thumb = canvasRef.current.toDataURL('image/jpeg', 0.2);
+            useStore.getState().setCurrentThumbnail(thumb);
+          }
+        }, 50);
+      }
+      return;
+    }
+
     setIsDrawing(true);
     e.currentTarget.setPointerCapture(e.pointerId);
     setCurrentStroke({
-      points: [getCoordinates(e)],
+      points: [coords],
       color: brushColor,
       size: brushSize,
       type: tool,

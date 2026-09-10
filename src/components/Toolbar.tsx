@@ -20,32 +20,41 @@ const Toolbar: React.FC = () => {
 
   const [showSettings, setShowSettings] = useState(false);
 
+  const handleToolClick = (newTool: any) => {
+    if (tool === newTool) {
+      setShowSettings(!showSettings);
+    } else {
+      setTool(newTool);
+      setShowSettings(true);
+    }
+  };
+
   return (
     <div className="relative pointer-events-auto">
       <div className="flex flex-col items-center bg-white/90 backdrop-blur-md rounded-[2rem] shadow-sm border border-gray-100 p-2 gap-2">
         <button 
-          onClick={() => { setTool('pen'); setShowSettings(true); }}
+          onClick={() => handleToolClick('pen')}
           className={`p-3 rounded-2xl transition-colors ${tool === 'pen' ? 'bg-[#ff4d79] text-white' : 'text-gray-600 hover:bg-gray-100 cursor-pointer'}`}
           title="Pen"
         >
           <PenTool size={22} strokeWidth={1.5} />
         </button>
         <button 
-          onClick={() => { setTool('pencil'); setShowSettings(true); }}
+          onClick={() => handleToolClick('pencil')}
           className={`p-3 rounded-2xl transition-colors ${tool === 'pencil' ? 'bg-[#ff4d79] text-white' : 'text-gray-600 hover:bg-gray-100 cursor-pointer'}`}
           title="Pencil"
         >
           <Pencil size={22} strokeWidth={1.5} />
         </button>
         <button 
-          onClick={() => { setTool('highlighter'); setShowSettings(true); }}
+          onClick={() => handleToolClick('highlighter')}
           className={`p-3 rounded-2xl transition-colors ${tool === 'highlighter' ? 'bg-[#ff4d79] text-white' : 'text-gray-600 hover:bg-gray-100 cursor-pointer'}`}
           title="Highlighter"
         >
           <Highlighter size={22} strokeWidth={1.5} />
         </button>
         <button 
-          onClick={() => { setTool('eraser'); setShowSettings(true); }}
+          onClick={() => handleToolClick('eraser')}
           className={`p-3 rounded-2xl transition-colors ${tool === 'eraser' ? 'bg-[#ff4d79] text-white' : 'text-gray-600 hover:bg-gray-100 cursor-pointer'}`}
           title="Eraser"
         >
@@ -58,7 +67,7 @@ const Toolbar: React.FC = () => {
           <MousePointer2 size={22} strokeWidth={1.5} className="rotate-90" />
         </button>
         <button 
-          onClick={() => { setTool('bucket'); setShowSettings(true); }}
+          onClick={() => handleToolClick('bucket')}
           className={`p-3 rounded-2xl transition-colors ${tool === 'bucket' ? 'bg-[#ff4d79] text-white' : 'text-gray-600 hover:bg-gray-100 cursor-pointer'}`}
           title="Bucket"
         >
@@ -77,21 +86,37 @@ const Toolbar: React.FC = () => {
 
       {showSettings && (
         <div className="absolute left-full top-0 ml-4 w-64 bg-white/95 backdrop-blur-md rounded-2xl shadow-xl border border-gray-100 p-4 z-50">
-          <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4">Tool Settings</h3>
-          
-          <div className="mb-6">
-            <div className="flex justify-between mb-2">
-              <span className="text-sm text-gray-600">Size</span>
-              <span className="text-sm font-bold text-gray-800">{brushSize}px</span>
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Tool Settings</h3>
+            {/* Preview Circle */}
+            <div className="w-10 h-10 rounded-lg bg-gray-100 border border-gray-200 flex items-center justify-center overflow-hidden">
+               <div 
+                 className="rounded-full" 
+                 style={{ 
+                   backgroundColor: brushColor, 
+                   width: Math.min(brushSize, 40), 
+                   height: Math.min(brushSize, 40),
+                   opacity: tool === 'highlighter' ? 0.4 : tool === 'pencil' ? 0.7 : 1
+                 }} 
+               />
             </div>
-            <input 
-              type="range" 
-              min="1" max="100" 
-              value={brushSize} 
-              onChange={e => setBrushSize(parseInt(e.target.value))}
-              className="w-full accent-[#ff4d79]"
-            />
           </div>
+          
+          {tool !== 'bucket' && (
+            <div className="mb-6">
+              <div className="flex justify-between mb-2">
+                <span className="text-sm text-gray-600">Size</span>
+                <span className="text-sm font-bold text-gray-800">{brushSize}px</span>
+              </div>
+              <input 
+                type="range" 
+                min="1" max="100" 
+                value={brushSize} 
+                onChange={e => setBrushSize(parseInt(e.target.value))}
+                className="w-full accent-[#ff4d79]"
+              />
+            </div>
+          )}
 
           <div>
             <span className="text-sm text-gray-600 mb-2 block">Color</span>

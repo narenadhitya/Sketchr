@@ -11,7 +11,8 @@ export interface Stroke {
   points: Point[];
   color: string;
   size: number;
-  type: 'pen' | 'pencil' | 'highlighter' | 'eraser';
+  type: 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'bucket';
+  image?: string;
 }
 
 export interface Layer {
