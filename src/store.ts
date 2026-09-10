@@ -11,8 +11,9 @@ export interface Stroke {
   points: Point[];
   color: string;
   size: number;
-  type: 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'bucket';
-  image?: string;
+  type: 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'bucket' | 'text';
+  text?: string;
+  fontFamily?: string;
 }
 
 export interface Layer {
@@ -48,12 +49,13 @@ export interface AppState {
   isPlaying: boolean;
   isLooping: boolean;
   fps: number;
-  tool: 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'bucket';
+  tool: 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'bucket' | 'text';
   brushColor: string;
   brushSize: number;
   onionSkin: boolean;
   projectName: string;
   currentThumbnail?: string;
+  fontFamily: string;
 
   // Actions
   setView: (view: 'home' | 'editor') => void;
@@ -70,13 +72,14 @@ export interface AppState {
   setActiveLayer: (index: number) => void;
   setPlaying: (playing: boolean) => void;
   setLooping: (loop: boolean) => void;
-  setTool: (tool: 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'bucket') => void;
+  setTool: (tool: 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'bucket' | 'text') => void;
   setBrushColor: (color: string) => void;
   setBrushSize: (size: number) => void;
   setOnionSkin: (enabled: boolean) => void;
   setFps: (fps: number) => void;
   setProjectName: (name: string) => void;
   setCurrentThumbnail: (thumb: string) => void;
+  setFontFamily: (font: string) => void;
 }
 
 const createEmptyFrame = (): Frame => ({
@@ -110,6 +113,7 @@ export const useStore = create<AppState>((set, get) => ({
   onionSkin: true,
   projectName: 'Untitled Project',
   currentThumbnail: undefined,
+  fontFamily: 'Arial',
 
   setView: (view) => set({ currentView: view }),
   
@@ -205,35 +209,34 @@ export const useStore = create<AppState>((set, get) => ({
     }),
 
   addFrame: () =>
-    set((state) => {
-      const newFrames = [...state.frames];
-      newFrames.splice(state.currentFrameIndex + 1, 0, createEmptyFrame());
-      return { frames: newFrames, currentFrameIndex: state.currentFrameIndex + 1 };
-    }),
+    set((state) => ({
+      frames: [...state.frames, createEmptyFrame()],
+      currentFrameIndex: state.frames.length,
+    })),
 
   duplicateFrame: () =>
     set((state) => {
       const newFrames = [...state.frames];
       const currentFrame = newFrames[state.currentFrameIndex];
-      // Deep copy frame
-      const dupFrame = JSON.parse(JSON.stringify(currentFrame));
-      dupFrame.id = uuidv4();
-      dupFrame.layers.forEach((l: any) => l.id = uuidv4());
-      
-      newFrames.splice(state.currentFrameIndex + 1, 0, dupFrame);
+      const duplicatedFrame = {
+        ...currentFrame,
+        id: uuidv4(),
+        layers: currentFrame.layers.map((layer) => ({
+          ...layer,
+          id: uuidv4(),
+          strokes: [...layer.strokes],
+        })),
+      };
+      newFrames.splice(state.currentFrameIndex + 1, 0, duplicatedFrame);
       return { frames: newFrames, currentFrameIndex: state.currentFrameIndex + 1 };
     }),
 
   deleteFrame: (index) =>
     set((state) => {
-      if (state.frames.length <= 1) return state; // don't delete last frame
+      if (state.frames.length <= 1) return state;
       const newFrames = state.frames.filter((_, i) => i !== index);
       let newIndex = state.currentFrameIndex;
-      if (newIndex >= newFrames.length) {
-        newIndex = newFrames.length - 1;
-      } else if (index < newIndex) {
-        newIndex--;
-      }
+      if (newIndex >= newFrames.length) newIndex = newFrames.length - 1;
       return { frames: newFrames, currentFrameIndex: newIndex };
     }),
 
@@ -247,4 +250,6 @@ export const useStore = create<AppState>((set, get) => ({
   setOnionSkin: (enabled) => set({ onionSkin: enabled }),
   setFps: (fps) => set({ fps }),
   setProjectName: (name) => set({ projectName: name }),
+  setCurrentThumbnail: (thumb) => set({ currentThumbnail: thumb }),
+  setFontFamily: (font) => set({ fontFamily: font }),
 }));

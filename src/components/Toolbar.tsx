@@ -10,6 +10,14 @@ const COLORS = [
   '#F4A460', '#FFDAB9', '#FFC0CB', '#FF69B4', '#C71585'
 ];
 
+const FONTS = [
+  { label: 'Sans Serif', value: 'system-ui, sans-serif' },
+  { label: 'Serif', value: 'Georgia, serif' },
+  { label: 'Monospace', value: '"Courier New", monospace' },
+  { label: 'Cursive', value: '"Comic Sans MS", cursive' },
+  { label: 'Impact', value: 'Impact, fantasy' }
+];
+
 const Toolbar: React.FC = () => {
   const tool = useStore(state => state.tool);
   const setTool = useStore(state => state.setTool);
@@ -17,6 +25,8 @@ const Toolbar: React.FC = () => {
   const setBrushColor = useStore(state => state.setBrushColor);
   const brushSize = useStore(state => state.brushSize);
   const setBrushSize = useStore(state => state.setBrushSize);
+  const fontFamily = useStore(state => state.fontFamily);
+  const setFontFamily = useStore(state => state.setFontFamily);
 
   const [showSettings, setShowSettings] = useState(false);
 
@@ -73,7 +83,11 @@ const Toolbar: React.FC = () => {
         >
           <PaintBucket size={22} strokeWidth={1.5} />
         </button>
-        <button className="p-3 rounded-2xl text-gray-600 hover:bg-gray-100 cursor-pointer" title="Text">
+        <button 
+          onClick={() => handleToolClick('text')}
+          className={`p-3 rounded-2xl transition-colors ${tool === 'text' ? 'bg-[#ff4d79] text-white' : 'text-gray-600 hover:bg-gray-100 cursor-pointer'}`}
+          title="Text"
+        >
           <Type size={22} strokeWidth={1.5} />
         </button>
         <button 
@@ -89,19 +103,41 @@ const Toolbar: React.FC = () => {
           <div className="flex justify-between items-center mb-4">
             <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Tool Settings</h3>
             {/* Preview Circle */}
-            <div className="w-10 h-10 rounded-lg bg-gray-100 border border-gray-200 flex items-center justify-center overflow-hidden">
-               <div 
-                 className="rounded-full" 
-                 style={{ 
-                   backgroundColor: brushColor, 
-                   width: Math.min(brushSize, 40), 
-                   height: Math.min(brushSize, 40),
-                   opacity: tool === 'highlighter' ? 0.4 : tool === 'pencil' ? 0.7 : 1
-                 }} 
-               />
-            </div>
+            {tool !== 'text' ? (
+              <div className="w-10 h-10 rounded-lg bg-gray-100 border border-gray-200 flex items-center justify-center overflow-hidden">
+                 <div 
+                   className="rounded-full" 
+                   style={{ 
+                     backgroundColor: brushColor, 
+                     width: Math.min(brushSize, 40), 
+                     height: Math.min(brushSize, 40),
+                     opacity: tool === 'highlighter' ? 0.4 : tool === 'pencil' ? 0.7 : 1
+                   }} 
+                 />
+              </div>
+            ) : (
+              <div 
+                className="text-lg font-bold w-10 h-10 flex items-center justify-center"
+                style={{ color: brushColor, fontFamily }}
+              >
+                Aa
+              </div>
+            )}
           </div>
           
+          {tool === 'text' && (
+            <div className="mb-4">
+              <span className="text-sm text-gray-600 mb-2 block">Font Family</span>
+              <select 
+                value={fontFamily}
+                onChange={e => setFontFamily(e.target.value)}
+                className="w-full bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-sm text-gray-800 outline-none"
+              >
+                {FONTS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+              </select>
+            </div>
+          )}
+
           {tool !== 'bucket' && (
             <div className="mb-6">
               <div className="flex justify-between mb-2">

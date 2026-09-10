@@ -104,6 +104,7 @@ const DrawingCanvas: React.FC = () => {
   const tool = useStore(state => state.tool);
   const brushColor = useStore(state => state.brushColor);
   const brushSize = useStore(state => state.brushSize);
+  const fontFamily = useStore(state => state.fontFamily);
   const addStroke = useStore(state => state.addStroke);
   const onionSkin = useStore(state => state.onionSkin);
   const isPlaying = useStore(state => state.isPlaying);
@@ -111,10 +112,52 @@ const DrawingCanvas: React.FC = () => {
   const [isDrawing, setIsDrawing] = useState(false);
   const [currentStroke, setCurrentStroke] = useState<Stroke | null>(null);
 
+  const [textEditor, setTextEditor] = useState<{ x: number, y: number, text: string } | null>(null);
+  const [isDraggingText, setIsDraggingText] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (textEditor) {
+         if (e.key === 'Enter' || e.key === 'Escape') {
+           if (textEditor.text.trim()) {
+             addStroke({
+               points: [{ x: textEditor.x, y: textEditor.y }],
+               color: brushColor,
+               size: brushSize,
+               type: 'text',
+               text: textEditor.text,
+               fontFamily: fontFamily
+             });
+             if (canvasRef.current && currentFrameIndex === 0) {
+               setTimeout(() => useStore.getState().setCurrentThumbnail(canvasRef.current!.toDataURL('image/jpeg', 0.2)), 50);
+             }
+           }
+           setTextEditor(null);
+         } else if (e.key === 'Backspace') {
+           setTextEditor(prev => prev ? { ...prev, text: prev.text.slice(0, -1) } : null);
+         } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+           setTextEditor(prev => prev ? { ...prev, text: prev.text + e.key } : null);
+         }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [textEditor, brushColor, brushSize, fontFamily, addStroke, currentFrameIndex]);
+
   // Helper to draw a stroke
   const drawStroke = (ctx: CanvasRenderingContext2D, stroke: Stroke, layerOpacity: number = 1) => {
     if (stroke.type === 'bucket') {
       doFloodFill(ctx, stroke.points[0].x, stroke.points[0].y, stroke.color, layerOpacity);
+      return;
+    }
+
+    if (stroke.type === 'text') {
+      ctx.globalAlpha = layerOpacity;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.font = `${stroke.size}px ${stroke.fontFamily || 'Arial'}`;
+      ctx.fillStyle = stroke.color;
+      ctx.textBaseline = 'top';
+      ctx.fillText(stroke.text || '', stroke.points[0].x, stroke.points[0].y);
       return;
     }
 
@@ -195,9 +238,25 @@ const DrawingCanvas: React.FC = () => {
       drawStroke(ctx, currentStroke, 1);
     }
 
+    if (textEditor) {
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.font = `${brushSize}px ${fontFamily}`;
+      ctx.fillStyle = brushColor;
+      ctx.textBaseline = 'top';
+      ctx.fillText(textEditor.text + '|', textEditor.x, textEditor.y);
+      
+      const width = ctx.measureText(textEditor.text || 'T').width;
+      ctx.strokeStyle = '#ff4d79';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]);
+      ctx.strokeRect(textEditor.x - 5, textEditor.y - 5, width + 15, brushSize + 10);
+      ctx.setLineDash([]);
+    }
+
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
-  }, [frames, currentFrameIndex, currentStroke]);
+  }, [frames, currentFrameIndex, currentStroke, textEditor, brushColor, brushSize, fontFamily]);
 
   const getCoordinates = (e: React.PointerEvent<HTMLCanvasElement>): Point => {
     const canvas = canvasRef.current;
@@ -214,6 +273,54 @@ const DrawingCanvas: React.FC = () => {
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const coords = getCoordinates(e);
 
+    if (tool === 'text') {
+      if (textEditor) {
+        const canvas = canvasRef.current;
+        if (canvas) {
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.font = `${brushSize}px ${fontFamily}`;
+            const width = ctx.measureText(textEditor.text || 'T').width;
+            if (coords.x >= textEditor.x - 10 && coords.x <= textEditor.x + width + 20 &&
+                coords.y >= textEditor.y - 10 && coords.y <= textEditor.y + brushSize + 20) {
+                setIsDraggingText(true);
+                e.currentTarget.setPointerCapture(e.pointerId);
+                return;
+            }
+          }
+        }
+        
+        if (textEditor.text.trim()) {
+           addStroke({
+             points: [{ x: textEditor.x, y: textEditor.y }],
+             color: brushColor,
+             size: brushSize,
+             type: 'text',
+             text: textEditor.text,
+             fontFamily: fontFamily
+           });
+        }
+        setTextEditor({ x: coords.x, y: coords.y, text: '' });
+      } else {
+        setTextEditor({ x: coords.x, y: coords.y, text: '' });
+      }
+      return;
+    }
+
+    if (textEditor) {
+      if (textEditor.text.trim()) {
+         addStroke({
+           points: [{ x: textEditor.x, y: textEditor.y }],
+           color: brushColor,
+           size: brushSize,
+           type: 'text',
+           text: textEditor.text,
+           fontFamily: fontFamily
+         });
+      }
+      setTextEditor(null);
+    }
+
     if (tool === 'bucket') {
       const newStroke: Stroke = {
         points: [coords],
@@ -223,9 +330,7 @@ const DrawingCanvas: React.FC = () => {
       };
       addStroke(newStroke);
       
-      // Save thumbnail if editing first frame
       if (canvasRef.current && currentFrameIndex === 0) {
-        // slight timeout to allow react to flush the state change and render
         setTimeout(() => {
           if (canvasRef.current) {
             const thumb = canvasRef.current.toDataURL('image/jpeg', 0.2);
@@ -247,22 +352,32 @@ const DrawingCanvas: React.FC = () => {
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const coords = getCoordinates(e);
+
+    if (isDraggingText && textEditor) {
+      setTextEditor({ ...textEditor, x: coords.x, y: coords.y });
+      return;
+    }
+
     if (!isDrawing || !currentStroke) return;
     setCurrentStroke({
       ...currentStroke,
-      points: [...currentStroke.points, getCoordinates(e)],
+      points: [...currentStroke.points, coords],
     });
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (isDraggingText) {
+      setIsDraggingText(false);
+      return;
+    }
+
     if (!isDrawing || !currentStroke) return;
     setIsDrawing(false);
     addStroke(currentStroke);
     setCurrentStroke(null);
 
-    // Save thumbnail if editing first frame
     if (canvasRef.current && currentFrameIndex === 0) {
-      // Use lower quality jpeg for thumbnail
       const thumb = canvasRef.current.toDataURL('image/jpeg', 0.2);
       useStore.getState().setCurrentThumbnail(thumb);
     }
