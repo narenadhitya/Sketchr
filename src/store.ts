@@ -33,6 +33,7 @@ export interface ProjectMeta {
   name: string;
   updatedAt: number;
   fps: number;
+  thumbnail?: string;
 }
 
 export interface AppState {
@@ -46,11 +47,12 @@ export interface AppState {
   isPlaying: boolean;
   isLooping: boolean;
   fps: number;
-  tool: 'pen' | 'pencil' | 'highlighter' | 'eraser';
+  tool: 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'bucket';
   brushColor: string;
   brushSize: number;
   onionSkin: boolean;
   projectName: string;
+  currentThumbnail?: string;
 
   // Actions
   setView: (view: 'home' | 'editor') => void;
@@ -67,12 +69,13 @@ export interface AppState {
   setActiveLayer: (index: number) => void;
   setPlaying: (playing: boolean) => void;
   setLooping: (loop: boolean) => void;
-  setTool: (tool: 'pen' | 'pencil' | 'highlighter' | 'eraser') => void;
+  setTool: (tool: 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'bucket') => void;
   setBrushColor: (color: string) => void;
   setBrushSize: (size: number) => void;
   setOnionSkin: (enabled: boolean) => void;
   setFps: (fps: number) => void;
   setProjectName: (name: string) => void;
+  setCurrentThumbnail: (thumb: string) => void;
 }
 
 const createEmptyFrame = (): Frame => ({
@@ -105,6 +108,7 @@ export const useStore = create<AppState>((set, get) => ({
   brushSize: 5,
   onionSkin: true,
   projectName: 'Untitled Project',
+  currentThumbnail: undefined,
 
   setView: (view) => set({ currentView: view }),
   
@@ -122,12 +126,10 @@ export const useStore = create<AppState>((set, get) => ({
       fps: 12,
     };
     
-    // Add to list
     const state = get();
     const newList = [newProj, ...state.projects];
     await localforage.setItem('sketchr-projects', newList);
     
-    // Set active state
     set({ 
       projects: newList,
       currentProjectId: newId,
@@ -135,10 +137,10 @@ export const useStore = create<AppState>((set, get) => ({
       frames: [createEmptyFrame()],
       currentFrameIndex: 0,
       fps: 12,
-      currentView: 'editor'
+      currentView: 'editor',
+      currentThumbnail: undefined
     });
     
-    // Save empty project data
     await localforage.setItem(`project-data-${newId}`, { frames: get().frames });
   },
 
@@ -156,6 +158,7 @@ export const useStore = create<AppState>((set, get) => ({
         frames: data.frames,
         currentFrameIndex: 0,
         currentView: 'editor',
+        currentThumbnail: meta.thumbnail
       });
     }
   },
@@ -164,15 +167,19 @@ export const useStore = create<AppState>((set, get) => ({
     const state = get();
     if (!state.currentProjectId) return;
 
-    // Save frames
     await localforage.setItem(`project-data-${state.currentProjectId}`, {
       frames: state.frames
     });
 
-    // Update metadata
     const updatedProjects = state.projects.map(p => {
       if (p.id === state.currentProjectId) {
-        return { ...p, name: state.projectName, fps: state.fps, updatedAt: Date.now() };
+        return { 
+          ...p, 
+          name: state.projectName, 
+          fps: state.fps, 
+          updatedAt: Date.now(),
+          thumbnail: state.currentThumbnail || p.thumbnail
+        };
       }
       return p;
     });

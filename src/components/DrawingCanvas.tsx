@@ -43,6 +43,14 @@ const DrawingCanvas: React.FC = () => {
       ctx.lineWidth = stroke.size;
     }
 
+    if (stroke.type === 'bucket') {
+      ctx.globalAlpha = layerOpacity;
+      ctx.globalCompositeOperation = 'destination-over'; // Put background fill behind strokes
+      ctx.fillStyle = stroke.color;
+      ctx.fillRect(0, 0, 1920, 1080);
+      return;
+    }
+
     ctx.beginPath();
     ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
     for (let i = 1; i < stroke.points.length; i++) {
@@ -138,6 +146,13 @@ const DrawingCanvas: React.FC = () => {
     setIsDrawing(false);
     addStroke(currentStroke);
     setCurrentStroke(null);
+
+    // Save thumbnail if editing first frame
+    if (canvasRef.current && currentFrameIndex === 0) {
+      // Use lower quality jpeg for thumbnail
+      const thumb = canvasRef.current.toDataURL('image/jpeg', 0.2);
+      useStore.getState().setCurrentThumbnail(thumb);
+    }
   };
 
   return (

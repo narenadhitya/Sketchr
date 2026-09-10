@@ -53,14 +53,15 @@ const Home: React.FC = () => {
                 className="flex flex-col items-center gap-2 cursor-pointer flex-shrink-0"
               >
                 <div className="w-56 h-40 bg-white rounded-xl shadow-sm border border-gray-100 relative overflow-hidden flex items-center justify-center hover:shadow-md transition-shadow">
-                  {/* Thumbnail Placeholder */}
-                  <div className="text-gray-300 font-medium">No Preview</div>
+                  {/* Thumbnail */}
+                  {proj.thumbnail ? (
+                    <img src={proj.thumbnail} alt={proj.name} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="text-gray-300 font-medium">No Preview</div>
+                  )}
                   
                   {/* Badge */}
                   <div className="absolute bottom-2 right-2 flex gap-1">
-                    <div className="bg-white/90 backdrop-blur text-[9px] font-bold px-2 py-1 rounded-full text-gray-700 shadow-sm">
-                      00:00
-                    </div>
                     <div className="bg-gray-800/80 backdrop-blur text-[9px] font-bold px-2 py-1 rounded-full text-white shadow-sm">
                       {proj.fps} fps
                     </div>
@@ -86,7 +87,11 @@ const Home: React.FC = () => {
                 className="flex flex-col items-center gap-2 cursor-pointer"
               >
                 <div className="w-full aspect-[4/3] bg-white rounded-xl shadow-sm border border-gray-100 relative overflow-hidden flex items-center justify-center hover:shadow-md transition-shadow">
-                   <div className="text-gray-300 font-medium text-sm">No Preview</div>
+                  {proj.thumbnail ? (
+                    <img src={proj.thumbnail} alt={proj.name} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="text-gray-300 font-medium text-sm">No Preview</div>
+                  )}
                 </div>
                 <span className="text-xs font-bold text-gray-700">{proj.name}</span>
               </div>
