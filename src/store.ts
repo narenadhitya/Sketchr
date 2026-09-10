@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
+import localforage from 'localforage';
 
 export interface Point {
   x: number;
@@ -27,7 +28,18 @@ export interface Frame {
   holdDuration: number;
 }
 
+export interface ProjectMeta {
+  id: string;
+  name: string;
+  updatedAt: number;
+  fps: number;
+}
+
 export interface AppState {
+  currentView: 'home' | 'editor';
+  projects: ProjectMeta[];
+  currentProjectId: string | null;
+
   frames: Frame[];
   currentFrameIndex: number;
   activeLayerIndex: number;
@@ -41,6 +53,12 @@ export interface AppState {
   projectName: string;
 
   // Actions
+  setView: (view: 'home' | 'editor') => void;
+  loadProjectsList: () => Promise<void>;
+  createProject: () => Promise<void>;
+  loadProject: (id: string) => Promise<void>;
+  saveCurrentProject: () => Promise<void>;
+
   addStroke: (stroke: Stroke) => void;
   addFrame: () => void;
   duplicateFrame: () => void;
@@ -71,7 +89,11 @@ const createEmptyFrame = (): Frame => ({
   holdDuration: 1,
 });
 
-export const useStore = create<AppState>((set) => ({
+export const useStore = create<AppState>((set, get) => ({
+  currentView: 'home',
+  projects: [],
+  currentProjectId: null,
+
   frames: [createEmptyFrame()],
   currentFrameIndex: 0,
   activeLayerIndex: 0,
@@ -83,6 +105,81 @@ export const useStore = create<AppState>((set) => ({
   brushSize: 5,
   onionSkin: true,
   projectName: 'Untitled Project',
+
+  setView: (view) => set({ currentView: view }),
+  
+  loadProjectsList: async () => {
+    const list: ProjectMeta[] = await localforage.getItem('sketchr-projects') || [];
+    set({ projects: list });
+  },
+
+  createProject: async () => {
+    const newId = uuidv4();
+    const newProj: ProjectMeta = {
+      id: newId,
+      name: 'Untitled Project',
+      updatedAt: Date.now(),
+      fps: 12,
+    };
+    
+    // Add to list
+    const state = get();
+    const newList = [newProj, ...state.projects];
+    await localforage.setItem('sketchr-projects', newList);
+    
+    // Set active state
+    set({ 
+      projects: newList,
+      currentProjectId: newId,
+      projectName: 'Untitled Project',
+      frames: [createEmptyFrame()],
+      currentFrameIndex: 0,
+      fps: 12,
+      currentView: 'editor'
+    });
+    
+    // Save empty project data
+    await localforage.setItem(`project-data-${newId}`, { frames: get().frames });
+  },
+
+  loadProject: async (id: string) => {
+    const state = get();
+    const meta = state.projects.find(p => p.id === id);
+    if (!meta) return;
+
+    const data: any = await localforage.getItem(`project-data-${id}`);
+    if (data && data.frames) {
+      set({
+        currentProjectId: id,
+        projectName: meta.name,
+        fps: meta.fps,
+        frames: data.frames,
+        currentFrameIndex: 0,
+        currentView: 'editor',
+      });
+    }
+  },
+
+  saveCurrentProject: async () => {
+    const state = get();
+    if (!state.currentProjectId) return;
+
+    // Save frames
+    await localforage.setItem(`project-data-${state.currentProjectId}`, {
+      frames: state.frames
+    });
+
+    // Update metadata
+    const updatedProjects = state.projects.map(p => {
+      if (p.id === state.currentProjectId) {
+        return { ...p, name: state.projectName, fps: state.fps, updatedAt: Date.now() };
+      }
+      return p;
+    });
+
+    await localforage.setItem('sketchr-projects', updatedProjects);
+    set({ projects: updatedProjects });
+  },
 
   addStroke: (stroke) =>
     set((state) => {
