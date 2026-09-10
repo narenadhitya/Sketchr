@@ -377,10 +377,18 @@ const DrawingCanvas: React.FC = () => {
     }
 
     if (!isDrawing || !currentStroke) return;
-    setCurrentStroke({
-      ...currentStroke,
-      points: [...currentStroke.points, coords],
-    });
+    
+    if (useStore.getState().isRulerActive && currentStroke.points.length > 0) {
+      setCurrentStroke({
+        ...currentStroke,
+        points: [currentStroke.points[0], coords],
+      });
+    } else {
+      setCurrentStroke({
+        ...currentStroke,
+        points: [...currentStroke.points, coords],
+      });
+    }
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {

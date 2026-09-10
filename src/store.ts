@@ -57,14 +57,26 @@ export interface AppState {
   currentThumbnail?: string;
   fontFamily: string;
 
+  saveStatus: 'Saved' | 'Saving...';
+  undoneStrokes: Stroke[];
+  clipboardStrokes: Stroke[];
+  isRulerActive: boolean;
+
   // Actions
   setView: (view: 'home' | 'editor') => void;
   loadProjectsList: () => Promise<void>;
   createProject: () => Promise<void>;
   loadProject: (id: string) => Promise<void>;
   saveCurrentProject: () => Promise<void>;
+  setSaveStatus: (status: 'Saved' | 'Saving...') => void;
 
   addStroke: (stroke: Stroke) => void;
+  undoStroke: () => void;
+  redoStroke: () => void;
+  copyStrokes: () => void;
+  pasteStrokes: () => void;
+  toggleRuler: () => void;
+
   addFrame: () => void;
   duplicateFrame: () => void;
   deleteFrame: (index: number) => void;
@@ -114,8 +126,13 @@ export const useStore = create<AppState>((set, get) => ({
   projectName: 'Untitled Project',
   currentThumbnail: undefined,
   fontFamily: 'Arial',
+  saveStatus: 'Saved',
+  undoneStrokes: [],
+  clipboardStrokes: [],
+  isRulerActive: false,
 
   setView: (view) => set({ currentView: view }),
+  setSaveStatus: (status) => set({ saveStatus: status }),
   
   loadProjectsList: async () => {
     const list: ProjectMeta[] = await localforage.getItem('sketchr-projects') || [];
@@ -205,8 +222,73 @@ export const useStore = create<AppState>((set, get) => ({
       currentFrame.layers = newLayers;
       newFrames[state.currentFrameIndex] = currentFrame;
 
-      return { frames: newFrames };
+      return { frames: newFrames, undoneStrokes: [] };
     }),
+
+  undoStroke: () => set((state) => {
+    const currentFrame = state.frames[state.currentFrameIndex];
+    const currentLayer = currentFrame.layers[state.activeLayerIndex];
+    if (currentLayer.strokes.length === 0) return state;
+
+    const newFrames = [...state.frames];
+    const newCurrentFrame = { ...newFrames[state.currentFrameIndex] };
+    const newLayers = [...newCurrentFrame.layers];
+    const newCurrentLayer = { ...newLayers[state.activeLayerIndex] };
+
+    const strokeToUndo = newCurrentLayer.strokes[newCurrentLayer.strokes.length - 1];
+    newCurrentLayer.strokes = newCurrentLayer.strokes.slice(0, -1);
+    
+    newLayers[state.activeLayerIndex] = newCurrentLayer;
+    newCurrentFrame.layers = newLayers;
+    newFrames[state.currentFrameIndex] = newCurrentFrame;
+
+    return { frames: newFrames, undoneStrokes: [...state.undoneStrokes, strokeToUndo] };
+  }),
+
+  redoStroke: () => set((state) => {
+    if (state.undoneStrokes.length === 0) return state;
+
+    const strokeToRedo = state.undoneStrokes[state.undoneStrokes.length - 1];
+    const newUndone = state.undoneStrokes.slice(0, -1);
+
+    const newFrames = [...state.frames];
+    const newCurrentFrame = { ...newFrames[state.currentFrameIndex] };
+    const newLayers = [...newCurrentFrame.layers];
+    const newCurrentLayer = { ...newLayers[state.activeLayerIndex] };
+
+    newCurrentLayer.strokes = [...newCurrentLayer.strokes, strokeToRedo];
+    newLayers[state.activeLayerIndex] = newCurrentLayer;
+    newCurrentFrame.layers = newLayers;
+    newFrames[state.currentFrameIndex] = newCurrentFrame;
+
+    return { frames: newFrames, undoneStrokes: newUndone };
+  }),
+
+  copyStrokes: () => set((state) => {
+    const currentFrame = state.frames[state.currentFrameIndex];
+    const currentLayer = currentFrame.layers[state.activeLayerIndex];
+    return { clipboardStrokes: [...currentLayer.strokes] };
+  }),
+
+  pasteStrokes: () => set((state) => {
+    if (state.clipboardStrokes.length === 0) return state;
+    const newFrames = [...state.frames];
+    const newCurrentFrame = { ...newFrames[state.currentFrameIndex] };
+    const newLayers = [...newCurrentFrame.layers];
+    const newCurrentLayer = { ...newLayers[state.activeLayerIndex] };
+
+    // Need to deep copy pasted strokes so their object refs are different
+    const deepCopiedStrokes = JSON.parse(JSON.stringify(state.clipboardStrokes));
+    newCurrentLayer.strokes = [...newCurrentLayer.strokes, ...deepCopiedStrokes];
+    
+    newLayers[state.activeLayerIndex] = newCurrentLayer;
+    newCurrentFrame.layers = newLayers;
+    newFrames[state.currentFrameIndex] = newCurrentFrame;
+
+    return { frames: newFrames };
+  }),
+
+  toggleRuler: () => set((state) => ({ isRulerActive: !state.isRulerActive })),
 
   addFrame: () =>
     set((state) => ({

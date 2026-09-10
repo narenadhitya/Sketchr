@@ -7,15 +7,19 @@ import { useStore } from '../store';
 
 const Editor: React.FC = () => {
   const saveCurrentProject = useStore(state => state.saveCurrentProject);
+  const setSaveStatus = useStore(state => state.setSaveStatus);
 
   useEffect(() => {
     // Auto-save every 5 seconds
     const interval = setInterval(() => {
-      saveCurrentProject();
+      setSaveStatus('Saving...');
+      saveCurrentProject().then(() => {
+        setTimeout(() => setSaveStatus('Saved'), 500);
+      });
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [saveCurrentProject]);
+  }, [saveCurrentProject, setSaveStatus]);
 
   return (
     <div className="flex flex-col h-screen bg-[#f0f3f9] text-gray-800 font-sans overflow-hidden relative">
