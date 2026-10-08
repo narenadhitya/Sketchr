@@ -11,6 +11,7 @@ import type {
   ToolId,
 } from './lib/project';
 import { createEmptyFrame, createLayer } from './lib/project';
+import { tweenFrames } from './lib/tween';
 import type { StorageKind, WorkspaceStatus } from './lib/storage';
 import {
   chooseWorkspace as pickWorkspaceFolder,
@@ -183,6 +184,7 @@ export interface AppState {
   setFrameHold: (index: number, hold: number) => void;
   copyFrame: (index: number) => void;
   pasteFrame: () => void;
+  tweenFrame: (indexA: number, indexB: number) => void;
 
   addLayer: () => void;
   deleteLayer: (index: number) => void;
@@ -828,6 +830,22 @@ export const useStore = create<AppState>((set, get) => ({
         const [moved] = next.splice(from, 1);
         next.splice(to, 0, moved);
         return { frames: next, currentFrameIndex: to };
+      });
+    }),
+
+  tweenFrame: (indexA, indexB) =>
+    set((state) => {
+      if (indexA < 0 || indexB >= state.frames.length || indexA >= indexB) return state;
+      
+      const frameA = state.frames[indexA];
+      const frameB = state.frames[indexB];
+      
+      const newFrame = tweenFrames(frameA, frameB);
+      
+      return withHistory(state, (frames) => {
+        const next = [...frames];
+        next.splice(indexA + 1, 0, newFrame);
+        return { frames: next, currentFrameIndex: indexA + 1 };
       });
     }),
 

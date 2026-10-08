@@ -14,8 +14,10 @@ import {
   Repeat,
   SkipBack,
   SkipForward,
+  SkipForward,
   Sparkles,
   Trash2,
+  Wand2,
 } from 'lucide-react';
 import { useStore, FPS_OPTIONS } from '../store';
 import FramePreview from './FramePreview';
@@ -52,6 +54,7 @@ const Timeline: React.FC = () => {
   const stepFrame = useStore((s) => s.stepFrame);
   const setFrameHold = useStore((s) => s.setFrameHold);
   const copyFrame = useStore((s) => s.copyFrame);
+  const tweenFrame = useStore((s) => s.tweenFrame);
   const setPlaying = useStore((s) => s.setPlaying);
   const setLooping = useStore((s) => s.setLooping);
   const setFps = useStore((s) => s.setFps);
@@ -448,6 +451,13 @@ const Timeline: React.FC = () => {
           </MenuItem>
           <MenuItem icon={<Copy size={14} />} onClick={() => { copyFrame(menu.index); setMenu(null); }}>
             Copy
+          </MenuItem>
+          <MenuItem 
+            icon={<Wand2 size={14} />} 
+            disabled={menu.index === frames.length - 1}
+            onClick={() => { tweenFrame(menu.index, menu.index + 1); setMenu(null); }}
+          >
+            Auto-Tween
           </MenuItem>
           <MenuDivider />
           <MenuLabel>Hold</MenuLabel>
