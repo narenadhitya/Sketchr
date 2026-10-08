@@ -1,337 +1,1092 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
-import localforage from 'localforage';
+import type {
+  BackgroundKind,
+  Frame,
+  Layer,
+  ProjectMeta,
+  ShapeKind,
+  Stroke,
+  StrokeType,
+  ToolId,
+} from './lib/project';
+import { createEmptyFrame, createLayer } from './lib/project';
+import type { StorageKind, WorkspaceStatus } from './lib/storage';
+import {
+  chooseWorkspace as pickWorkspaceFolder,
+  countBrowserStorageProjects,
+  disconnectWorkspace as releaseWorkspace,
+  getBackend,
+  migrateBrowserStorageToWorkspace,
+  reconnectWorkspace as regrantWorkspace,
+  restoreWorkspace,
+  supportsFileSystemAccess,
+} from './lib/storage';
 
-export interface Point {
-  x: number;
-  y: number;
-}
+/* Re-exported so components can keep importing the domain model from the
+   store, which is the only module most of them need to know about. */
+export type {
+  BackgroundKind,
+  CanvasPreset,
+  Frame,
+  Layer,
+  Point,
+  ProjectMeta,
+  ShapeKind,
+  Stroke,
+  StrokeType,
+  ToolId,
+} from './lib/project';
+export { CANVAS_PRESETS, FPS_OPTIONS, createEmptyFrame, createLayer } from './lib/project';
+export type { StorageKind, WorkspaceStatus } from './lib/storage';
 
-export interface Stroke {
-  points: Point[];
-  color: string;
-  size: number;
-  type: 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'bucket' | 'text';
-  text?: string;
-  fontFamily?: string;
-}
+export type ThemeMode = 'light' | 'dark';
+export type SortKey = 'recent' | 'name' | 'created';
 
-export interface Layer {
+export interface Toast {
   id: string;
-  name: string;
-  strokes: Stroke[];
-  visible: boolean;
-  opacity: number;
+  message: string;
+  kind: 'info' | 'success' | 'error';
 }
 
-export interface Frame {
-  id: string;
-  layers: Layer[];
-  holdDuration: number;
+interface HistoryEntry {
+  frames: Frame[];
+  currentFrameIndex: number;
+  activeLayerIndex: number;
 }
 
-export interface ProjectMeta {
-  id: string;
-  name: string;
-  updatedAt: number;
-  fps: number;
-  thumbnail?: string;
-}
+const HISTORY_LIMIT = 80;
+const MAX_RECENT_COLORS = 10;
+
+
+/* ------------------------------------------------------------------ */
+/* State                                                               */
+/* ------------------------------------------------------------------ */
 
 export interface AppState {
   currentView: 'home' | 'editor';
   projects: ProjectMeta[];
   currentProjectId: string | null;
+  projectsLoaded: boolean;
+
+  /** Where projects are being written right now. */
+  storageKind: StorageKind;
+  workspaceStatus: WorkspaceStatus;
+  workspaceName: string | null;
+  /** Projects still only in browser storage, for the "import" prompt. */
+  browserProjectCount: number;
 
   frames: Frame[];
   currentFrameIndex: number;
   activeLayerIndex: number;
+
   isPlaying: boolean;
   isLooping: boolean;
   fps: number;
-  tool: 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'bucket' | 'text';
+
+  tool: ToolId;
+  lastDrawTool: StrokeType;
   brushColor: string;
   brushSize: number;
+  brushOpacity: number;
+  fontFamily: string;
+  shapeKind: ShapeKind;
+  shapeFilled: boolean;
+  recentColors: string[];
+  savedColors: string[];
+  /** Bucket-only: fill with transparency, clearing the region instead. */
+  fillTransparent: boolean;
+
   onionSkin: boolean;
+  onionPrevCount: number;
+  onionNextCount: number;
+  onionOpacity: number;
+  onionTinted: boolean;
+
+  canvasWidth: number;
+  canvasHeight: number;
+  background: BackgroundKind;
+  zoom: number;
+  panX: number;
+  panY: number;
+
   projectName: string;
   currentThumbnail?: string;
-  fontFamily: string;
-
   saveStatus: 'Saved' | 'Saving...';
-  undoneStrokes: Stroke[];
-  clipboardStrokes: Stroke[];
-  isRulerActive: boolean;
+  lastSavedAt: number | null;
 
-  // Actions
+  past: HistoryEntry[];
+  future: HistoryEntry[];
+  clipboardStrokes: Stroke[];
+  clipboardFrame: Frame | null;
+
+  isRulerActive: boolean;
+  symmetry: 'off' | 'vertical' | 'horizontal';
+
+  theme: ThemeMode;
+  sidebarOpen: boolean;
+  sidebarTab: SidebarTab;
+  showExport: boolean;
+  showShortcuts: boolean;
+  showNewProject: boolean;
+  showOnionSettings: boolean;
+  homeSearch: string;
+  homeSort: SortKey;
+  toasts: Toast[];
+
+  /* --- actions --- */
   setView: (view: 'home' | 'editor') => void;
+  setTheme: (theme: ThemeMode) => void;
+  toggleTheme: () => void;
+  toast: (message: string, kind?: Toast['kind']) => void;
+  dismissToast: (id: string) => void;
+  setPanel: (panel: PanelKey, open: boolean) => void;
+
+  initStorage: () => Promise<void>;
+  connectWorkspace: () => Promise<void>;
+  reconnectWorkspace: () => Promise<void>;
+  disconnectWorkspace: () => Promise<void>;
+
   loadProjectsList: () => Promise<void>;
-  createProject: () => Promise<void>;
+  createProject: (opts?: {
+    name?: string;
+    width?: number;
+    height?: number;
+    fps?: number;
+  }) => Promise<void>;
   loadProject: (id: string) => Promise<void>;
   saveCurrentProject: () => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
+  duplicateProject: (id: string) => Promise<void>;
+  renameProject: (id: string, name: string) => Promise<void>;
   setSaveStatus: (status: 'Saved' | 'Saving...') => void;
+  setHomeSearch: (q: string) => void;
+  setHomeSort: (sort: SortKey) => void;
 
   addStroke: (stroke: Stroke) => void;
-  undoStroke: () => void;
-  redoStroke: () => void;
+  undo: () => void;
+  redo: () => void;
   copyStrokes: () => void;
   pasteStrokes: () => void;
+  clearLayer: () => void;
+  clearFrame: () => void;
+  flipActiveLayer: (axis: 'horizontal' | 'vertical') => void;
   toggleRuler: () => void;
+  setSymmetry: (mode: AppState['symmetry']) => void;
 
   addFrame: () => void;
   duplicateFrame: () => void;
   deleteFrame: (index: number) => void;
+  moveFrame: (from: number, to: number) => void;
   setCurrentFrame: (index: number) => void;
+  stepFrame: (delta: number) => void;
+  setFrameHold: (index: number, hold: number) => void;
+  copyFrame: (index: number) => void;
+  pasteFrame: () => void;
+
+  addLayer: () => void;
+  deleteLayer: (index: number) => void;
+  duplicateLayer: (index: number) => void;
+  mergeLayerDown: (index: number) => void;
+  moveLayer: (from: number, to: number) => void;
+  renameLayer: (index: number, name: string) => void;
+  toggleLayerVisibility: (index: number) => void;
+  toggleLayerLock: (index: number) => void;
+  setLayerOpacity: (index: number, opacity: number) => void;
   setActiveLayer: (index: number) => void;
+
   setPlaying: (playing: boolean) => void;
+  togglePlaying: () => void;
   setLooping: (loop: boolean) => void;
-  setTool: (tool: 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'bucket' | 'text') => void;
-  setBrushColor: (color: string) => void;
+  setTool: (tool: ToolId) => void;
+  setBrushColor: (color: string, remember?: boolean) => void;
   setBrushSize: (size: number) => void;
+  setBrushOpacity: (opacity: number) => void;
+  setShapeKind: (kind: ShapeKind) => void;
+  setShapeFilled: (filled: boolean) => void;
+  setFillTransparent: (transparent: boolean) => void;
+  addSavedColor: (color: string) => void;
+  removeSavedColor: (color: string) => void;
+  setSidebarOpen: (open: boolean) => void;
+  setSidebarTab: (tab: SidebarTab) => void;
+  toggleSidebar: (tab: SidebarTab) => void;
   setOnionSkin: (enabled: boolean) => void;
+  setOnionOption: (key: OnionNumberKey, value: number) => void;
+  setOnionTinted: (tinted: boolean) => void;
+  setBackground: (bg: BackgroundKind) => void;
+  setZoom: (zoom: number) => void;
+  setPan: (x: number, y: number) => void;
+  resetView: () => void;
   setFps: (fps: number) => void;
   setProjectName: (name: string) => void;
   setCurrentThumbnail: (thumb: string) => void;
   setFontFamily: (font: string) => void;
 }
 
-const createEmptyFrame = (): Frame => ({
-  id: uuidv4(),
-  layers: [
-    {
-      id: uuidv4(),
-      name: 'Layer 1',
-      strokes: [],
-      visible: true,
-      opacity: 1,
-    },
-  ],
-  holdDuration: 1,
+export type SidebarTab = 'color' | 'layers' | 'canvas';
+
+export type PanelKey = 'showExport' | 'showShortcuts' | 'showNewProject' | 'showOnionSettings';
+
+type OnionNumberKey = 'onionPrevCount' | 'onionNextCount' | 'onionOpacity';
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+const snapshot = (state: AppState): HistoryEntry => ({
+  frames: state.frames,
+  currentFrameIndex: state.currentFrameIndex,
+  activeLayerIndex: state.activeLayerIndex,
 });
+
+/**
+ * Wraps a frames-mutation so it lands on the undo stack. Every mutator below
+ * rebuilds the arrays it touches, so keeping references here is safe (and far
+ * cheaper than deep-cloning the whole project on every stroke).
+ */
+const withHistory = (
+  state: AppState,
+  produce: (frames: Frame[]) => Partial<AppState>,
+): Partial<AppState> => ({
+  past: [...state.past, snapshot(state)].slice(-HISTORY_LIMIT),
+  future: [],
+  ...produce(state.frames),
+});
+
+/** Immutably replace one layer of one frame. */
+const patchLayer = (
+  frames: Frame[],
+  frameIndex: number,
+  layerIndex: number,
+  patch: (layer: Layer) => Layer,
+): Frame[] =>
+  frames.map((frame, fi) =>
+    fi !== frameIndex
+      ? frame
+      : {
+          ...frame,
+          layers: frame.layers.map((layer, li) => (li !== layerIndex ? layer : patch(layer))),
+        },
+  );
+
+const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+
+const readTheme = (): ThemeMode => {
+  if (typeof window === 'undefined') return 'light';
+  try {
+    const stored = window.localStorage.getItem('sketchr-theme');
+    if (stored === 'light' || stored === 'dark') return stored;
+  } catch {
+    /* storage blocked — fall through to the system preference */
+  }
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+};
+
+const SWATCHES_KEY = 'sketchr-swatches';
+
+const readSavedColors = (): string[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(SWATCHES_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((c): c is string => typeof c === 'string') : [];
+  } catch {
+    return [];
+  }
+};
+
+const persistSavedColors = (colors: string[]) => {
+  try {
+    window.localStorage.setItem(SWATCHES_KEY, JSON.stringify(colors));
+  } catch {
+    /* storage blocked — swatches just will not survive a reload */
+  }
+};
+
+const applyTheme = (theme: ThemeMode) => {
+  if (typeof document === 'undefined') return;
+  document.documentElement.dataset.theme = theme;
+  try {
+    window.localStorage.setItem('sketchr-theme', theme);
+  } catch {
+    /* storage blocked — the theme still applies for this session */
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* Store                                                               */
+/* ------------------------------------------------------------------ */
 
 export const useStore = create<AppState>((set, get) => ({
   currentView: 'home',
   projects: [],
   currentProjectId: null,
+  projectsLoaded: false,
+
+  storageKind: 'indexeddb',
+  workspaceStatus: supportsFileSystemAccess() ? 'disconnected' : 'unsupported',
+  workspaceName: null,
+  browserProjectCount: 0,
 
   frames: [createEmptyFrame()],
   currentFrameIndex: 0,
   activeLayerIndex: 0,
+
   isPlaying: false,
   isLooping: true,
   fps: 12,
+
   tool: 'pen',
-  brushColor: '#000000',
-  brushSize: 5,
+  lastDrawTool: 'pen',
+  brushColor: '#12141c',
+  brushSize: 6,
+  brushOpacity: 1,
+  fontFamily: 'system-ui, sans-serif',
+  shapeKind: 'rect',
+  shapeFilled: false,
+  recentColors: ['#12141c', '#ff4d79', '#2f80ed'],
+  savedColors: readSavedColors(),
+  fillTransparent: false,
+
   onionSkin: true,
+  onionPrevCount: 1,
+  onionNextCount: 0,
+  onionOpacity: 0.3,
+  onionTinted: true,
+
+  canvasWidth: 1920,
+  canvasHeight: 1080,
+  background: 'white',
+  zoom: 1,
+  panX: 0,
+  panY: 0,
+
   projectName: 'Untitled Project',
   currentThumbnail: undefined,
-  fontFamily: 'Arial',
   saveStatus: 'Saved',
-  undoneStrokes: [],
+  lastSavedAt: null,
+
+  past: [],
+  future: [],
   clipboardStrokes: [],
+  clipboardFrame: null,
+
   isRulerActive: false,
+  symmetry: 'off',
+
+  theme: readTheme(),
+  sidebarOpen: false,
+  sidebarTab: 'color',
+  showExport: false,
+  showShortcuts: false,
+  showNewProject: false,
+  showOnionSettings: false,
+  homeSearch: '',
+  homeSort: 'recent',
+  toasts: [],
+
+  /* ---------------- shell ---------------- */
 
   setView: (view) => set({ currentView: view }),
-  setSaveStatus: (status) => set({ saveStatus: status }),
-  
-  loadProjectsList: async () => {
-    const list: ProjectMeta[] = await localforage.getItem('sketchr-projects') || [];
-    set({ projects: list });
+
+  setTheme: (theme) => {
+    applyTheme(theme);
+    set({ theme });
   },
 
-  createProject: async () => {
-    const newId = uuidv4();
-    const newProj: ProjectMeta = {
-      id: newId,
-      name: 'Untitled Project',
-      updatedAt: Date.now(),
-      fps: 12,
-    };
-    
-    const state = get();
-    const newList = [newProj, ...state.projects];
-    await localforage.setItem('sketchr-projects', newList);
-    
-    set({ 
-      projects: newList,
-      currentProjectId: newId,
-      projectName: 'Untitled Project',
-      frames: [createEmptyFrame()],
-      currentFrameIndex: 0,
-      fps: 12,
-      currentView: 'editor',
-      currentThumbnail: undefined
+  toggleTheme: () => {
+    const next: ThemeMode = get().theme === 'dark' ? 'light' : 'dark';
+    applyTheme(next);
+    set({ theme: next });
+  },
+
+  toast: (message, kind = 'info') => {
+    const id = uuidv4();
+    set((state) => ({ toasts: [...state.toasts, { id, message, kind }] }));
+    setTimeout(() => get().dismissToast(id), 2600);
+  },
+
+  dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
+
+  setPanel: (panel, open) => set({ [panel]: open } as Pick<AppState, PanelKey>),
+
+  setHomeSearch: (homeSearch) => set({ homeSearch }),
+  setHomeSort: (homeSort) => set({ homeSort }),
+
+  /* ---------------- projects ---------------- */
+
+  initStorage: async () => {
+    const workspace = await restoreWorkspace();
+    set({
+      workspaceStatus: workspace.status,
+      workspaceName: workspace.name,
+      storageKind: getBackend().kind,
     });
-    
-    await localforage.setItem(`project-data-${newId}`, { frames: get().frames });
+
+    if (workspace.status === 'connected') {
+      const migrated = await migrateBrowserStorageToWorkspace();
+      if (migrated > 0) {
+        get().toast(
+          `Saved ${migrated} existing project${migrated === 1 ? '' : 's'} to ${workspace.name}`,
+          'success',
+        );
+      }
+    }
+
+    await get().loadProjectsList();
+    set({ browserProjectCount: await countBrowserStorageProjects() });
   },
 
-  loadProject: async (id: string) => {
-    const state = get();
-    const meta = state.projects.find(p => p.id === id);
-    if (!meta) return;
+  connectWorkspace: async () => {
+    const workspace = await pickWorkspaceFolder();
+    set({
+      workspaceStatus: workspace.status,
+      workspaceName: workspace.name,
+      storageKind: getBackend().kind,
+    });
 
-    const data: any = await localforage.getItem(`project-data-${id}`);
-    if (data && data.frames) {
-      set({
-        currentProjectId: id,
-        projectName: meta.name,
-        fps: meta.fps,
-        frames: data.frames,
-        currentFrameIndex: 0,
-        currentView: 'editor',
-        currentThumbnail: meta.thumbnail
-      });
+    if (workspace.status !== 'connected') {
+      if (workspace.status === 'needs-permission') {
+        get().toast('Sketchr needs write access to that folder', 'error');
+      }
+      return;
     }
+
+    const migrated = await migrateBrowserStorageToWorkspace();
+    await get().loadProjectsList();
+    set({ browserProjectCount: await countBrowserStorageProjects() });
+    get().toast(
+      migrated > 0
+        ? `Saved ${migrated} project${migrated === 1 ? '' : 's'} to ${workspace.name}`
+        : `Projects are now saved in ${workspace.name}`,
+      'success',
+    );
+  },
+
+  reconnectWorkspace: async () => {
+    const workspace = await regrantWorkspace();
+    set({
+      workspaceStatus: workspace.status,
+      workspaceName: workspace.name,
+      storageKind: getBackend().kind,
+    });
+
+    if (workspace.status !== 'connected') {
+      get().toast('Folder access was not granted', 'error');
+      return;
+    }
+
+    await migrateBrowserStorageToWorkspace();
+    await get().loadProjectsList();
+    set({ browserProjectCount: await countBrowserStorageProjects() });
+    get().toast(`Reconnected to ${workspace.name}`, 'success');
+  },
+
+  disconnectWorkspace: async () => {
+    const workspace = await releaseWorkspace();
+    set({
+      workspaceStatus: workspace.status,
+      workspaceName: workspace.name,
+      storageKind: getBackend().kind,
+    });
+    await get().loadProjectsList();
+    get().toast('Back to browser storage — your files were left untouched');
+  },
+
+  loadProjectsList: async () => {
+    try {
+      const projects = await getBackend().list();
+      set({ projects, projectsLoaded: true, storageKind: getBackend().kind });
+    } catch {
+      set({ projects: [], projectsLoaded: true });
+      get().toast('Could not read the workspace folder', 'error');
+    }
+  },
+
+  createProject: async (opts) => {
+    const now = Date.now();
+    const meta: ProjectMeta = {
+      id: uuidv4(),
+      name: opts?.name?.trim() || 'Untitled Project',
+      createdAt: now,
+      updatedAt: now,
+      fps: opts?.fps ?? 12,
+      width: opts?.width ?? 1920,
+      height: opts?.height ?? 1080,
+      frameCount: 1,
+    };
+
+    const frames = [createEmptyFrame()];
+
+    try {
+      await getBackend().write(meta, frames);
+    } catch {
+      get().toast('Could not create the project file', 'error');
+      return;
+    }
+
+    set((state) => ({
+      projects: [meta, ...state.projects],
+      currentProjectId: meta.id,
+      projectName: meta.name,
+      frames,
+      currentFrameIndex: 0,
+      activeLayerIndex: 0,
+      fps: meta.fps,
+      canvasWidth: meta.width,
+      canvasHeight: meta.height,
+      currentView: 'editor',
+      currentThumbnail: undefined,
+      past: [],
+      future: [],
+      zoom: 1,
+      panX: 0,
+      panY: 0,
+      showNewProject: false,
+      lastSavedAt: now,
+    }));
+  },
+
+  loadProject: async (id) => {
+    const record = await getBackend().read(id);
+    if (!record) {
+      get().toast('That project could not be opened', 'error');
+      return;
+    }
+
+    set({
+      currentProjectId: record.meta.id,
+      projectName: record.meta.name,
+      fps: record.meta.fps,
+      canvasWidth: record.meta.width,
+      canvasHeight: record.meta.height,
+      frames: record.frames,
+      currentFrameIndex: 0,
+      activeLayerIndex: 0,
+      currentView: 'editor',
+      currentThumbnail: record.meta.thumbnail,
+      past: [],
+      future: [],
+      zoom: 1,
+      panX: 0,
+      panY: 0,
+    });
   },
 
   saveCurrentProject: async () => {
     const state = get();
     if (!state.currentProjectId) return;
 
-    await localforage.setItem(`project-data-${state.currentProjectId}`, {
-      frames: state.frames
-    });
+    const existing = state.projects.find((p) => p.id === state.currentProjectId);
+    const meta: ProjectMeta = {
+      id: state.currentProjectId,
+      name: state.projectName,
+      createdAt: existing?.createdAt ?? Date.now(),
+      updatedAt: Date.now(),
+      fps: state.fps,
+      width: state.canvasWidth,
+      height: state.canvasHeight,
+      frameCount: state.frames.length,
+      thumbnail: state.currentThumbnail ?? existing?.thumbnail,
+    };
 
-    const updatedProjects = state.projects.map(p => {
-      if (p.id === state.currentProjectId) {
-        return { 
-          ...p, 
-          name: state.projectName, 
-          fps: state.fps, 
-          updatedAt: Date.now(),
-          thumbnail: state.currentThumbnail || p.thumbnail
-        };
-      }
-      return p;
-    });
+    try {
+      await getBackend().write(meta, state.frames);
+    } catch {
+      get().toast('Save failed — check access to the workspace folder', 'error');
+      return;
+    }
 
-    await localforage.setItem('sketchr-projects', updatedProjects);
-    set({ projects: updatedProjects });
+    set((current) => ({
+      projects: current.projects.some((p) => p.id === meta.id)
+        ? current.projects.map((p) => (p.id === meta.id ? meta : p))
+        : [meta, ...current.projects],
+      lastSavedAt: Date.now(),
+    }));
   },
+
+  deleteProject: async (id) => {
+    try {
+      await getBackend().remove(id);
+    } catch {
+      get().toast('Could not delete that project', 'error');
+      return;
+    }
+    set((state) => ({ projects: state.projects.filter((p) => p.id !== id) }));
+    get().toast('Project deleted', 'success');
+  },
+
+  duplicateProject: async (id) => {
+    const record = await getBackend().read(id);
+    if (!record) return;
+
+    const copy: ProjectMeta = {
+      ...record.meta,
+      id: uuidv4(),
+      name: `${record.meta.name} copy`,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const frames = record.frames.map((f) => ({
+      ...f,
+      id: uuidv4(),
+      layers: f.layers.map((l) => ({ ...l, id: uuidv4(), strokes: [...l.strokes] })),
+    }));
+
+    try {
+      await getBackend().write(copy, frames);
+    } catch {
+      get().toast('Could not duplicate that project', 'error');
+      return;
+    }
+
+    set((state) => ({ projects: [copy, ...state.projects] }));
+    get().toast('Project duplicated', 'success');
+  },
+
+  renameProject: async (id, name) => {
+    const trimmed = name.trim() || 'Untitled Project';
+    const record = await getBackend().read(id);
+    if (!record) return;
+
+    const meta: ProjectMeta = { ...record.meta, name: trimmed, updatedAt: Date.now() };
+
+    try {
+      // On the file backend this also renames the file on disk.
+      await getBackend().write(meta, record.frames);
+    } catch {
+      get().toast('Could not rename that project', 'error');
+      return;
+    }
+
+    set((state) => ({
+      projects: state.projects.map((p) => (p.id === id ? meta : p)),
+      projectName: state.currentProjectId === id ? trimmed : state.projectName,
+    }));
+  },
+
+  setSaveStatus: (saveStatus) => set({ saveStatus }),
+
+  /* ---------------- strokes & history ---------------- */
 
   addStroke: (stroke) =>
     set((state) => {
-      const newFrames = [...state.frames];
-      const currentFrame = { ...newFrames[state.currentFrameIndex] };
-      const newLayers = [...currentFrame.layers];
-      const currentLayer = { ...newLayers[state.activeLayerIndex] };
+      const layer = state.frames[state.currentFrameIndex]?.layers[state.activeLayerIndex];
+      if (!layer || layer.locked) return state;
 
-      currentLayer.strokes = [...currentLayer.strokes, stroke];
-      newLayers[state.activeLayerIndex] = currentLayer;
-      currentFrame.layers = newLayers;
-      newFrames[state.currentFrameIndex] = currentFrame;
-
-      return { frames: newFrames, undoneStrokes: [] };
+      return withHistory(state, (frames) => ({
+        frames: patchLayer(frames, state.currentFrameIndex, state.activeLayerIndex, (l) => ({
+          ...l,
+          strokes: [...l.strokes, stroke],
+        })),
+      }));
     }),
 
-  undoStroke: () => set((state) => {
-    const currentFrame = state.frames[state.currentFrameIndex];
-    const currentLayer = currentFrame.layers[state.activeLayerIndex];
-    if (currentLayer.strokes.length === 0) return state;
+  undo: () =>
+    set((state) => {
+      const previous = state.past[state.past.length - 1];
+      if (!previous) return state;
+      return {
+        ...previous,
+        past: state.past.slice(0, -1),
+        future: [...state.future, snapshot(state)].slice(-HISTORY_LIMIT),
+      };
+    }),
 
-    const newFrames = [...state.frames];
-    const newCurrentFrame = { ...newFrames[state.currentFrameIndex] };
-    const newLayers = [...newCurrentFrame.layers];
-    const newCurrentLayer = { ...newLayers[state.activeLayerIndex] };
+  redo: () =>
+    set((state) => {
+      const next = state.future[state.future.length - 1];
+      if (!next) return state;
+      return {
+        ...next,
+        future: state.future.slice(0, -1),
+        past: [...state.past, snapshot(state)].slice(-HISTORY_LIMIT),
+      };
+    }),
 
-    const strokeToUndo = newCurrentLayer.strokes[newCurrentLayer.strokes.length - 1];
-    newCurrentLayer.strokes = newCurrentLayer.strokes.slice(0, -1);
-    
-    newLayers[state.activeLayerIndex] = newCurrentLayer;
-    newCurrentFrame.layers = newLayers;
-    newFrames[state.currentFrameIndex] = newCurrentFrame;
+  copyStrokes: () =>
+    set((state) => {
+      const layer = state.frames[state.currentFrameIndex]?.layers[state.activeLayerIndex];
+      if (!layer?.strokes.length) return state;
+      get().toast(`Copied ${layer.strokes.length} stroke${layer.strokes.length === 1 ? '' : 's'}`);
+      return { clipboardStrokes: layer.strokes.map((s) => ({ ...s, points: [...s.points] })) };
+    }),
 
-    return { frames: newFrames, undoneStrokes: [...state.undoneStrokes, strokeToUndo] };
-  }),
+  pasteStrokes: () =>
+    set((state) => {
+      if (!state.clipboardStrokes.length) return state;
+      const copies = state.clipboardStrokes.map((s) => ({
+        ...s,
+        points: s.points.map((p) => ({ ...p })),
+      }));
+      return withHistory(state, (frames) => ({
+        frames: patchLayer(frames, state.currentFrameIndex, state.activeLayerIndex, (l) => ({
+          ...l,
+          strokes: [...l.strokes, ...copies],
+        })),
+      }));
+    }),
 
-  redoStroke: () => set((state) => {
-    if (state.undoneStrokes.length === 0) return state;
+  clearLayer: () =>
+    set((state) =>
+      withHistory(state, (frames) => ({
+        frames: patchLayer(frames, state.currentFrameIndex, state.activeLayerIndex, (l) => ({
+          ...l,
+          strokes: [],
+        })),
+      })),
+    ),
 
-    const strokeToRedo = state.undoneStrokes[state.undoneStrokes.length - 1];
-    const newUndone = state.undoneStrokes.slice(0, -1);
+  clearFrame: () =>
+    set((state) =>
+      withHistory(state, (frames) => ({
+        frames: frames.map((f, i) =>
+          i !== state.currentFrameIndex
+            ? f
+            : { ...f, layers: f.layers.map((l) => ({ ...l, strokes: [] })) },
+        ),
+      })),
+    ),
 
-    const newFrames = [...state.frames];
-    const newCurrentFrame = { ...newFrames[state.currentFrameIndex] };
-    const newLayers = [...newCurrentFrame.layers];
-    const newCurrentLayer = { ...newLayers[state.activeLayerIndex] };
-
-    newCurrentLayer.strokes = [...newCurrentLayer.strokes, strokeToRedo];
-    newLayers[state.activeLayerIndex] = newCurrentLayer;
-    newCurrentFrame.layers = newLayers;
-    newFrames[state.currentFrameIndex] = newCurrentFrame;
-
-    return { frames: newFrames, undoneStrokes: newUndone };
-  }),
-
-  copyStrokes: () => set((state) => {
-    const currentFrame = state.frames[state.currentFrameIndex];
-    const currentLayer = currentFrame.layers[state.activeLayerIndex];
-    return { clipboardStrokes: [...currentLayer.strokes] };
-  }),
-
-  pasteStrokes: () => set((state) => {
-    if (state.clipboardStrokes.length === 0) return state;
-    const newFrames = [...state.frames];
-    const newCurrentFrame = { ...newFrames[state.currentFrameIndex] };
-    const newLayers = [...newCurrentFrame.layers];
-    const newCurrentLayer = { ...newLayers[state.activeLayerIndex] };
-
-    // Need to deep copy pasted strokes so their object refs are different
-    const deepCopiedStrokes = JSON.parse(JSON.stringify(state.clipboardStrokes));
-    newCurrentLayer.strokes = [...newCurrentLayer.strokes, ...deepCopiedStrokes];
-    
-    newLayers[state.activeLayerIndex] = newCurrentLayer;
-    newCurrentFrame.layers = newLayers;
-    newFrames[state.currentFrameIndex] = newCurrentFrame;
-
-    return { frames: newFrames };
-  }),
+  flipActiveLayer: (axis) =>
+    set((state) =>
+      withHistory(state, (frames) => ({
+        frames: patchLayer(frames, state.currentFrameIndex, state.activeLayerIndex, (l) => ({
+          ...l,
+          strokes: l.strokes.map((stroke) => ({
+            ...stroke,
+            points: stroke.points.map((pt) =>
+              axis === 'horizontal'
+                ? { ...pt, x: state.canvasWidth - pt.x }
+                : { ...pt, y: state.canvasHeight - pt.y },
+            ),
+          })),
+        })),
+      })),
+    ),
 
   toggleRuler: () => set((state) => ({ isRulerActive: !state.isRulerActive })),
+  setSymmetry: (symmetry) => set({ symmetry }),
+
+  /* ---------------- frames ---------------- */
 
   addFrame: () =>
-    set((state) => ({
-      frames: [...state.frames, createEmptyFrame()],
-      currentFrameIndex: state.frames.length,
-    })),
+    set((state) =>
+      withHistory(state, (frames) => {
+        const blank = createEmptyFrame();
+        // Keep the layer stack of the frame we branched from, minus its art.
+        const source = frames[state.currentFrameIndex];
+        if (source) {
+          blank.layers = source.layers.map((l) => ({ ...createLayer(l.name), opacity: l.opacity }));
+        }
+        const next = [...frames];
+        next.splice(state.currentFrameIndex + 1, 0, blank);
+        return { frames: next, currentFrameIndex: state.currentFrameIndex + 1 };
+      }),
+    ),
 
   duplicateFrame: () =>
-    set((state) => {
-      const newFrames = [...state.frames];
-      const currentFrame = newFrames[state.currentFrameIndex];
-      const duplicatedFrame = {
-        ...currentFrame,
-        id: uuidv4(),
-        layers: currentFrame.layers.map((layer) => ({
-          ...layer,
+    set((state) =>
+      withHistory(state, (frames) => {
+        const source = frames[state.currentFrameIndex];
+        const copy: Frame = {
+          ...source,
           id: uuidv4(),
-          strokes: [...layer.strokes],
-        })),
-      };
-      newFrames.splice(state.currentFrameIndex + 1, 0, duplicatedFrame);
-      return { frames: newFrames, currentFrameIndex: state.currentFrameIndex + 1 };
-    }),
+          layers: source.layers.map((l) => ({ ...l, id: uuidv4(), strokes: [...l.strokes] })),
+        };
+        const next = [...frames];
+        next.splice(state.currentFrameIndex + 1, 0, copy);
+        return { frames: next, currentFrameIndex: state.currentFrameIndex + 1 };
+      }),
+    ),
 
   deleteFrame: (index) =>
     set((state) => {
-      if (state.frames.length <= 1) return state;
-      const newFrames = state.frames.filter((_, i) => i !== index);
-      let newIndex = state.currentFrameIndex;
-      if (newIndex >= newFrames.length) newIndex = newFrames.length - 1;
-      return { frames: newFrames, currentFrameIndex: newIndex };
+      if (state.frames.length <= 1) {
+        get().toast('A project needs at least one frame', 'error');
+        return state;
+      }
+      return withHistory(state, (frames) => {
+        const next = frames.filter((_, i) => i !== index);
+        return {
+          frames: next,
+          currentFrameIndex: clamp(
+            state.currentFrameIndex > index ? state.currentFrameIndex - 1 : state.currentFrameIndex,
+            0,
+            next.length - 1,
+          ),
+        };
+      });
     }),
 
-  setCurrentFrame: (index) => set({ currentFrameIndex: index }),
+  moveFrame: (from, to) =>
+    set((state) => {
+      if (from === to || to < 0 || to >= state.frames.length) return state;
+      return withHistory(state, (frames) => {
+        const next = [...frames];
+        const [moved] = next.splice(from, 1);
+        next.splice(to, 0, moved);
+        return { frames: next, currentFrameIndex: to };
+      });
+    }),
+
+  setCurrentFrame: (index) =>
+    set((state) => {
+      const next = clamp(index, 0, state.frames.length - 1);
+      return {
+        currentFrameIndex: next,
+        activeLayerIndex: clamp(
+          state.activeLayerIndex,
+          0,
+          (state.frames[next]?.layers.length ?? 1) - 1,
+        ),
+      };
+    }),
+
+  stepFrame: (delta) =>
+    set((state) => {
+      const count = state.frames.length;
+      const next = (state.currentFrameIndex + delta + count) % count;
+      return {
+        currentFrameIndex: next,
+        activeLayerIndex: clamp(
+          state.activeLayerIndex,
+          0,
+          (state.frames[next]?.layers.length ?? 1) - 1,
+        ),
+      };
+    }),
+
+  setFrameHold: (index, hold) =>
+    set((state) =>
+      withHistory(state, (frames) => ({
+        frames: frames.map((f, i) => (i === index ? { ...f, holdDuration: clamp(hold, 1, 24) } : f)),
+      })),
+    ),
+
+  copyFrame: (index) => {
+    const frame = get().frames[index];
+    if (!frame) return;
+    set({
+      clipboardFrame: {
+        ...frame,
+        layers: frame.layers.map((l) => ({ ...l, strokes: [...l.strokes] })),
+      },
+    });
+    get().toast(`Frame ${index + 1} copied`);
+  },
+
+  pasteFrame: () =>
+    set((state) => {
+      const source = state.clipboardFrame;
+      if (!source) return state;
+      return withHistory(state, (frames) => {
+        const copy: Frame = {
+          ...source,
+          id: uuidv4(),
+          layers: source.layers.map((l) => ({ ...l, id: uuidv4(), strokes: [...l.strokes] })),
+        };
+        const next = [...frames];
+        next.splice(state.currentFrameIndex + 1, 0, copy);
+        return { frames: next, currentFrameIndex: state.currentFrameIndex + 1 };
+      });
+    }),
+
+  /* ---------------- layers ---------------- */
+
+  addLayer: () =>
+    set((state) => {
+      const frame = state.frames[state.currentFrameIndex];
+      if (frame.layers.length >= 12) {
+        get().toast('Layer limit reached (12)', 'error');
+        return state;
+      }
+      return withHistory(state, (frames) => ({
+        frames: frames.map((f, i) =>
+          i !== state.currentFrameIndex
+            ? f
+            : { ...f, layers: [...f.layers, createLayer(`Layer ${f.layers.length + 1}`)] },
+        ),
+        activeLayerIndex: frame.layers.length,
+      }));
+    }),
+
+  deleteLayer: (index) =>
+    set((state) => {
+      const frame = state.frames[state.currentFrameIndex];
+      if (frame.layers.length <= 1) {
+        get().toast('A frame needs at least one layer', 'error');
+        return state;
+      }
+      return withHistory(state, (frames) => ({
+        frames: frames.map((f, i) =>
+          i !== state.currentFrameIndex
+            ? f
+            : { ...f, layers: f.layers.filter((_, li) => li !== index) },
+        ),
+        activeLayerIndex: clamp(index > 0 ? index - 1 : 0, 0, frame.layers.length - 2),
+      }));
+    }),
+
+  duplicateLayer: (index) =>
+    set((state) =>
+      withHistory(state, (frames) => ({
+        frames: frames.map((f, i) => {
+          if (i !== state.currentFrameIndex) return f;
+          const source = f.layers[index];
+          const copy: Layer = {
+            ...source,
+            id: uuidv4(),
+            name: `${source.name} copy`,
+            strokes: [...source.strokes],
+          };
+          const layers = [...f.layers];
+          layers.splice(index + 1, 0, copy);
+          return { ...f, layers };
+        }),
+        activeLayerIndex: index + 1,
+      })),
+    ),
+
+  mergeLayerDown: (index) =>
+    set((state) => {
+      if (index <= 0) {
+        get().toast('Nothing below to merge into', 'error');
+        return state;
+      }
+      return withHistory(state, (frames) => ({
+        frames: frames.map((f, i) => {
+          if (i !== state.currentFrameIndex) return f;
+          const layers = [...f.layers];
+          const above = layers[index];
+          const below = layers[index - 1];
+          layers[index - 1] = { ...below, strokes: [...below.strokes, ...above.strokes] };
+          layers.splice(index, 1);
+          return { ...f, layers };
+        }),
+        activeLayerIndex: index - 1,
+      }));
+    }),
+
+  moveLayer: (from, to) =>
+    set((state) => {
+      const frame = state.frames[state.currentFrameIndex];
+      if (from === to || to < 0 || to >= frame.layers.length) return state;
+      return withHistory(state, (frames) => ({
+        frames: frames.map((f, i) => {
+          if (i !== state.currentFrameIndex) return f;
+          const layers = [...f.layers];
+          const [moved] = layers.splice(from, 1);
+          layers.splice(to, 0, moved);
+          return { ...f, layers };
+        }),
+        activeLayerIndex: to,
+      }));
+    }),
+
+  renameLayer: (index, name) =>
+    set((state) => ({
+      frames: patchLayer(state.frames, state.currentFrameIndex, index, (l) => ({
+        ...l,
+        name: name.trim() || l.name,
+      })),
+    })),
+
+  toggleLayerVisibility: (index) =>
+    set((state) => ({
+      frames: patchLayer(state.frames, state.currentFrameIndex, index, (l) => ({
+        ...l,
+        visible: !l.visible,
+      })),
+    })),
+
+  toggleLayerLock: (index) =>
+    set((state) => ({
+      frames: patchLayer(state.frames, state.currentFrameIndex, index, (l) => ({
+        ...l,
+        locked: !l.locked,
+      })),
+    })),
+
+  setLayerOpacity: (index, opacity) =>
+    set((state) => ({
+      frames: patchLayer(state.frames, state.currentFrameIndex, index, (l) => ({
+        ...l,
+        opacity: clamp(opacity, 0, 1),
+      })),
+    })),
+
   setActiveLayer: (index) => set({ activeLayerIndex: index }),
-  setPlaying: (playing) => set({ isPlaying: playing }),
-  setLooping: (loop) => set({ isLooping: loop }),
-  setTool: (tool) => set({ tool }),
-  setBrushColor: (color) => set({ brushColor: color }),
-  setBrushSize: (size) => set({ brushSize: size }),
-  setOnionSkin: (enabled) => set({ onionSkin: enabled }),
+
+  /* ---------------- tools & view ---------------- */
+
+  setPlaying: (isPlaying) => set({ isPlaying }),
+  togglePlaying: () => set((state) => ({ isPlaying: !state.isPlaying })),
+  setLooping: (isLooping) => set({ isLooping }),
+
+  setTool: (tool) =>
+    set((state) => ({
+      tool,
+      lastDrawTool:
+        tool === 'eyedropper' || tool === 'pan' || tool === 'bucket' || tool === 'text'
+          ? state.lastDrawTool
+          : (tool as StrokeType),
+    })),
+
+  setBrushColor: (color, remember = true) =>
+    set((state) => ({
+      brushColor: color,
+      recentColors: remember
+        ? [color, ...state.recentColors.filter((c) => c !== color)].slice(0, MAX_RECENT_COLORS)
+        : state.recentColors,
+    })),
+
+  setBrushSize: (size) => set({ brushSize: clamp(Math.round(size), 1, 120) }),
+  setBrushOpacity: (opacity) => set({ brushOpacity: clamp(opacity, 0.05, 1) }),
+  setShapeKind: (shapeKind) => set({ shapeKind }),
+  setShapeFilled: (shapeFilled) => set({ shapeFilled }),
+  setFillTransparent: (fillTransparent) => set({ fillTransparent }),
+
+  addSavedColor: (color) =>
+    set((state) => {
+      if (state.savedColors.includes(color)) return state;
+      const savedColors = [color, ...state.savedColors].slice(0, 30);
+      persistSavedColors(savedColors);
+      return { savedColors };
+    }),
+
+  removeSavedColor: (color) =>
+    set((state) => {
+      const savedColors = state.savedColors.filter((c) => c !== color);
+      persistSavedColors(savedColors);
+      return { savedColors };
+    }),
+
+  setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
+  setSidebarTab: (sidebarTab) => set({ sidebarTab, sidebarOpen: true }),
+
+  toggleSidebar: (tab) =>
+    set((state) => ({
+      // Clicking the tab you are already on closes the dock.
+      sidebarOpen: !(state.sidebarOpen && state.sidebarTab === tab),
+      sidebarTab: tab,
+    })),
+
+  setOnionSkin: (onionSkin) => set({ onionSkin }),
+  setOnionOption: (key, value) => set({ [key]: value } as Pick<AppState, OnionNumberKey>),
+  setOnionTinted: (onionTinted) => set({ onionTinted }),
+
+  setBackground: (background) => set({ background }),
+  setZoom: (zoom) => set({ zoom: clamp(zoom, 0.2, 8) }),
+  setPan: (panX, panY) => set({ panX, panY }),
+  resetView: () => set({ zoom: 1, panX: 0, panY: 0 }),
+
   setFps: (fps) => set({ fps }),
-  setProjectName: (name) => set({ projectName: name }),
-  setCurrentThumbnail: (thumb) => set({ currentThumbnail: thumb }),
-  setFontFamily: (font) => set({ fontFamily: font }),
+  setProjectName: (projectName) => set({ projectName }),
+  setCurrentThumbnail: (currentThumbnail) => set({ currentThumbnail }),
+  setFontFamily: (fontFamily) => set({ fontFamily }),
 }));
+
+// Paint the stored theme before the first render so there is no flash.
+applyTheme(useStore.getState().theme);

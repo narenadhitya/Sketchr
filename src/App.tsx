@@ -1,21 +1,22 @@
-import React, { useEffect } from 'react';
+import { useEffect } from 'react';
 import Home from './components/Home';
 import Editor from './components/Editor';
+import { ToastStack } from './components/ui';
 import { useStore } from './store';
 
 function App() {
-  const currentView = useStore(state => state.currentView);
-  const loadProjectsList = useStore(state => state.loadProjectsList);
+  const currentView = useStore((s) => s.currentView);
+  const initStorage = useStore((s) => s.initStorage);
 
   useEffect(() => {
-    // Initial load of project metadata
-    loadProjectsList();
-  }, [loadProjectsList]);
+    // Restores the workspace folder (if one was chosen) before listing projects.
+    void initStorage();
+  }, [initStorage]);
 
   return (
     <>
-      {currentView === 'home' && <Home />}
-      {currentView === 'editor' && <Editor />}
+      {currentView === 'home' ? <Home /> : <Editor />}
+      <ToastStack />
     </>
   );
 }

@@ -1,433 +1,571 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
-import type { Stroke, Point } from '../store';
+import type { Point, Stroke, StrokeType } from '../store';
+import { drawBackground, drawFrame, drawStroke, rgbToHex } from '../lib/render';
+import { TRANSPARENT_FILL } from '../lib/color';
 
-const hexToRgba = (hex: string, alpha: number) => {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return [r, g, b, Math.floor(alpha * 255)];
+const ONION_PREV_TINT = '#ff4d79';
+const ONION_NEXT_TINT = '#35c9d6';
+
+/**
+ * Space reserved for the floating chrome (topbar, tool rail, layers panel and
+ * timeline). The canvas is centred inside what is left, so artwork is never
+ * hidden underneath a panel.
+ */
+const CHROME_INSET = { top: 92, bottom: 156, left: 92, right: 92 };
+
+/** The right dock is much wider than the default gutter it sits in. */
+const SIDEBAR_INSET = 340;
+
+/** Renders a frame offscreen, optionally flattened to a single tint colour. */
+const renderOnionLayer = (
+  frame: Parameters<typeof drawFrame>[1],
+  width: number,
+  height: number,
+  tint?: string,
+) => {
+  const off = document.createElement('canvas');
+  off.width = width;
+  off.height = height;
+  const ctx = off.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return off;
+
+  drawFrame(ctx, frame);
+  if (tint) {
+    // `source-in` keeps the alpha shape of the artwork and swaps its colour,
+    // so erased holes stay holes instead of becoming solid tint.
+    ctx.globalCompositeOperation = 'source-in';
+    ctx.fillStyle = tint;
+    ctx.fillRect(0, 0, width, height);
+  }
+  return off;
 };
 
-const doFloodFill = (ctx: CanvasRenderingContext2D, startX: number, startY: number, fillColor: string, opacity: number) => {
-  const width = ctx.canvas.width;
-  const height = ctx.canvas.height;
-  
-  // Get image data
-  const imageData = ctx.getImageData(0, 0, width, height);
-  const data = imageData.data;
-  
-  const targetX = Math.floor(startX);
-  const targetY = Math.floor(startY);
-  if (targetX < 0 || targetY < 0 || targetX >= width || targetY >= height) return;
+const mirrorStroke = (stroke: Stroke, axis: 'vertical' | 'horizontal', w: number, h: number): Stroke => ({
+  ...stroke,
+  points: stroke.points.map((p) =>
+    axis === 'vertical' ? { ...p, x: w - p.x } : { ...p, y: h - p.y },
+  ),
+});
 
-  const startIndex = (targetY * width + targetX) * 4;
-  const startR = data[startIndex];
-  const startG = data[startIndex + 1];
-  const startB = data[startIndex + 2];
-  const startA = data[startIndex + 3];
-
-  const fill = hexToRgba(fillColor, opacity);
-  
-  // If same color, do nothing
-  if (Math.abs(startR - fill[0]) < 5 && Math.abs(startG - fill[1]) < 5 && Math.abs(startB - fill[2]) < 5 && Math.abs(startA - fill[3]) < 5) {
-    return;
-  }
-
-  const matchColor = (index: number) => {
-    return Math.abs(data[index] - startR) < 30 &&
-           Math.abs(data[index+1] - startG) < 30 &&
-           Math.abs(data[index+2] - startB) < 30 &&
-           Math.abs(data[index+3] - startA) < 30;
-  };
-
-  const stack = [[targetX, targetY]];
-  const visited = new Uint8Array(width * height);
-
-  while (stack.length > 0) {
-    const [x, y] = stack.pop()!;
-    let currentX = x;
-    let pixelPos = (y * width + currentX) * 4;
-
-    while (currentX >= 0 && matchColor(pixelPos)) {
-      currentX--;
-      pixelPos -= 4;
-    }
-    currentX++;
-    pixelPos += 4;
-    
-    let spanAbove = false;
-    let spanBelow = false;
-
-    while (currentX < width && matchColor(pixelPos)) {
-      const vIdx = y * width + currentX;
-      visited[vIdx] = 1;
-      
-      data[pixelPos] = fill[0];
-      data[pixelPos+1] = fill[1];
-      data[pixelPos+2] = fill[2];
-      data[pixelPos+3] = fill[3];
-
-      if (y > 0) {
-        if (!spanAbove && matchColor(pixelPos - width * 4) && !visited[(y - 1) * width + currentX]) {
-          stack.push([currentX, y - 1]);
-          spanAbove = true;
-        } else if (spanAbove && !matchColor(pixelPos - width * 4)) {
-          spanAbove = false;
-        }
-      }
-
-      if (y < height - 1) {
-        if (!spanBelow && matchColor(pixelPos + width * 4) && !visited[(y + 1) * width + currentX]) {
-          stack.push([currentX, y + 1]);
-          spanBelow = true;
-        } else if (spanBelow && !matchColor(pixelPos + width * 4)) {
-          spanBelow = false;
-        }
-      }
-
-      currentX++;
-      pixelPos += 4;
-    }
-  }
-
-  ctx.putImageData(imageData, 0, 0);
-};
-
-const generateThumbnail = (sourceCanvas: HTMLCanvasElement) => {
-  const thumbCanvas = document.createElement('canvas');
-  thumbCanvas.width = 320;
-  thumbCanvas.height = 180;
-  const ctx = thumbCanvas.getContext('2d');
-  if (ctx) {
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, 320, 180);
-    ctx.drawImage(sourceCanvas, 0, 0, 320, 180);
-    return thumbCanvas.toDataURL('image/jpeg', 0.8);
-  }
-  return undefined;
+/** Snap an angle to the nearest 15° increment, for shift-constrained lines. */
+const snapAngle = (from: Point, to: Point): Point => {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const dist = Math.hypot(dx, dy);
+  const step = Math.PI / 12;
+  const angle = Math.round(Math.atan2(dy, dx) / step) * step;
+  return { x: from.x + Math.cos(angle) * dist, y: from.y + Math.sin(angle) * dist };
 };
 
 const DrawingCanvas: React.FC = () => {
+  const outerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const onionSkinRef = useRef<HTMLCanvasElement>(null);
-  
-  const frames = useStore(state => state.frames);
-  const currentFrameIndex = useStore(state => state.currentFrameIndex);
-  const activeLayerIndex = useStore(state => state.activeLayerIndex);
-  const tool = useStore(state => state.tool);
-  const brushColor = useStore(state => state.brushColor);
-  const brushSize = useStore(state => state.brushSize);
-  const fontFamily = useStore(state => state.fontFamily);
-  const addStroke = useStore(state => state.addStroke);
-  const onionSkin = useStore(state => state.onionSkin);
-  const isPlaying = useStore(state => state.isPlaying);
+  const onionRef = useRef<HTMLCanvasElement>(null);
+  const bgRef = useRef<HTMLCanvasElement>(null);
+  const textInputRef = useRef<HTMLTextAreaElement>(null);
 
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [currentStroke, setCurrentStroke] = useState<Stroke | null>(null);
+  const frames = useStore((s) => s.frames);
+  const currentFrameIndex = useStore((s) => s.currentFrameIndex);
+  const activeLayerIndex = useStore((s) => s.activeLayerIndex);
+  const tool = useStore((s) => s.tool);
+  const brushColor = useStore((s) => s.brushColor);
+  const brushSize = useStore((s) => s.brushSize);
+  const brushOpacity = useStore((s) => s.brushOpacity);
+  const fontFamily = useStore((s) => s.fontFamily);
+  const shapeKind = useStore((s) => s.shapeKind);
+  const shapeFilled = useStore((s) => s.shapeFilled);
+  const addStroke = useStore((s) => s.addStroke);
+  const onionSkin = useStore((s) => s.onionSkin);
+  const onionPrevCount = useStore((s) => s.onionPrevCount);
+  const onionNextCount = useStore((s) => s.onionNextCount);
+  const onionOpacity = useStore((s) => s.onionOpacity);
+  const onionTinted = useStore((s) => s.onionTinted);
+  const isPlaying = useStore((s) => s.isPlaying);
+  const canvasWidth = useStore((s) => s.canvasWidth);
+  const canvasHeight = useStore((s) => s.canvasHeight);
+  const background = useStore((s) => s.background);
+  const zoom = useStore((s) => s.zoom);
+  const panX = useStore((s) => s.panX);
+  const panY = useStore((s) => s.panY);
+  const setZoom = useStore((s) => s.setZoom);
+  const setPan = useStore((s) => s.setPan);
+  const symmetry = useStore((s) => s.symmetry);
+  const isRulerActive = useStore((s) => s.isRulerActive);
+  const setBrushColor = useStore((s) => s.setBrushColor);
+  const setTool = useStore((s) => s.setTool);
+  const sidebarOpen = useStore((s) => s.sidebarOpen);
+  const fillTransparent = useStore((s) => s.fillTransparent);
 
-  const [textEditor, setTextEditor] = useState<{ x: number, y: number, text: string } | null>(null);
-  const [isDraggingText, setIsDraggingText] = useState(false);
+  const [fitScale, setFitScale] = useState(1);
+  const [liveStroke, setLiveStroke] = useState<Stroke | null>(null);
+  const [textDraft, setTextDraft] = useState<{ x: number; y: number; value: string } | null>(null);
+  const [cursor, setCursor] = useState<Point | null>(null);
+  const [altHeld, setAltHeld] = useState(false);
+  const [isPanning, setIsPanning] = useState(false);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (textEditor) {
-         if (e.key === 'Enter' || e.key === 'Escape') {
-           if (textEditor.text.trim()) {
-             addStroke({
-               points: [{ x: textEditor.x, y: textEditor.y }],
-               color: brushColor,
-               size: brushSize,
-               type: 'text',
-               text: textEditor.text,
-               fontFamily: fontFamily
-             });
-             if (canvasRef.current && currentFrameIndex === 0) {
-               setTimeout(() => {
-                 const thumb = generateThumbnail(canvasRef.current!);
-                 if (thumb) useStore.getState().setCurrentThumbnail(thumb);
-               }, 50);
-             }
-           }
-           setTextEditor(null);
-         } else if (e.key === 'Backspace') {
-           setTextEditor(prev => prev ? { ...prev, text: prev.text.slice(0, -1) } : null);
-         } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-           setTextEditor(prev => prev ? { ...prev, text: prev.text + e.key } : null);
-         }
-      }
+  const drawing = useRef(false);
+  const panning = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
+  const shiftHeld = useRef(false);
+  /** Mirrors `liveStroke` so pointerup always commits the newest samples. */
+  const liveRef = useRef<Stroke | null>(null);
+
+  const setLive = useCallback((next: Stroke | null) => {
+    liveRef.current = next;
+    setLiveStroke(next);
+  }, []);
+
+  const activeLayer = frames[currentFrameIndex]?.layers[activeLayerIndex];
+  const layerLocked = activeLayer?.locked ?? false;
+  const totalScale = fitScale * zoom;
+  const panMode = tool === 'pan' || altHeld;
+
+  /* ---------------- fit the stage to the available space ---------------- */
+
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const measure = () => {
+      const { width, height } = el.getBoundingClientRect();
+      setFitScale(
+        Math.max(0.05, Math.min(width / canvasWidth, height / canvasHeight)),
+      );
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [textEditor, brushColor, brushSize, fontFamily, addStroke, currentFrameIndex]);
 
-  // Helper to draw a stroke
-  const drawStroke = (ctx: CanvasRenderingContext2D, stroke: Stroke, layerOpacity: number = 1) => {
-    if (stroke.type === 'bucket') {
-      doFloodFill(ctx, stroke.points[0].x, stroke.points[0].y, stroke.color, layerOpacity);
-      return;
-    }
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [canvasWidth, canvasHeight]);
 
-    if (stroke.type === 'text') {
-      ctx.globalAlpha = layerOpacity;
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.font = `${stroke.size}px ${stroke.fontFamily || 'Arial'}`;
-      ctx.fillStyle = stroke.color;
-      ctx.textBaseline = 'top';
-      ctx.fillText(stroke.text || '', stroke.points[0].x, stroke.points[0].y);
-      return;
-    }
+  /* ---------------- modifier keys ---------------- */
 
-    if (stroke.points.length < 2) return;
-    
-    // Configure tool styles
-    if (stroke.type === 'highlighter') {
-      ctx.globalAlpha = 0.4 * layerOpacity;
-      ctx.globalCompositeOperation = 'multiply';
-      ctx.lineWidth = stroke.size * 3;
-    } else if (stroke.type === 'pencil') {
-      ctx.globalAlpha = 0.7 * layerOpacity;
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.lineWidth = stroke.size * 0.7;
-    } else if (stroke.type === 'eraser') {
-      ctx.globalAlpha = 1;
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.lineWidth = stroke.size * 2;
-    } else {
-      // Pen
-      ctx.globalAlpha = 1 * layerOpacity;
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.lineWidth = stroke.size;
-    }
-
-    ctx.beginPath();
-    ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
-    for (let i = 1; i < stroke.points.length; i++) {
-      ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
-    }
-    
-    ctx.strokeStyle = stroke.type === 'eraser' ? '#ffffff' : stroke.color;
-    ctx.lineCap = stroke.type === 'highlighter' ? 'butt' : 'round';
-    ctx.lineJoin = 'round';
-    ctx.stroke();
-  };
-
-  // Render Onion Skin Canvas
   useEffect(() => {
-    const onionCanvas = onionSkinRef.current;
-    if (!onionCanvas) return;
-    const ctx = onionCanvas.getContext('2d', { willReadFrequently: true });
+    // Space is reserved for play/pause, so Alt is the temporary pan modifier.
+    const down = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') shiftHeld.current = true;
+      if (e.altKey) setAltHeld(true);
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') shiftHeld.current = false;
+      if (!e.altKey) setAltHeld(false);
+    };
+    const blur = () => {
+      shiftHeld.current = false;
+      setAltHeld(false);
+    };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', blur);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', blur);
+    };
+  }, []);
+
+  /* ---------------- background ---------------- */
+
+  useEffect(() => {
+    const ctx = bgRef.current?.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+    drawBackground(ctx, background, canvasWidth, canvasHeight);
+  }, [background, canvasWidth, canvasHeight]);
+
+  /* ---------------- onion skin ---------------- */
+
+  useEffect(() => {
+    const canvas = onionRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    ctx.clearRect(0, 0, onionCanvas.width, onionCanvas.height);
+    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+    if (!onionSkin || isPlaying) return;
 
-    if (onionSkin && !isPlaying && currentFrameIndex > 0) {
-      const prevFrame = frames[currentFrameIndex - 1];
-      prevFrame.layers.forEach(layer => {
-        if (!layer.visible) return;
-        layer.strokes.forEach(stroke => {
-          drawStroke(ctx, stroke, layer.opacity);
-        });
-      });
+    // Furthest frames first so the nearest neighbour reads strongest.
+    for (let d = onionPrevCount; d >= 1; d--) {
+      const frame = frames[currentFrameIndex - d];
+      if (!frame) continue;
+      ctx.globalAlpha = onionOpacity * (1 - (d - 1) / (onionPrevCount + 1));
+      ctx.drawImage(
+        renderOnionLayer(frame, canvasWidth, canvasHeight, onionTinted ? ONION_PREV_TINT : undefined),
+        0,
+        0,
+      );
     }
-  }, [frames, currentFrameIndex, onionSkin, isPlaying]);
 
-  // Render Active Canvas
+    for (let d = onionNextCount; d >= 1; d--) {
+      const frame = frames[currentFrameIndex + d];
+      if (!frame) continue;
+      ctx.globalAlpha = onionOpacity * (1 - (d - 1) / (onionNextCount + 1));
+      ctx.drawImage(
+        renderOnionLayer(frame, canvasWidth, canvasHeight, onionTinted ? ONION_NEXT_TINT : undefined),
+        0,
+        0,
+      );
+    }
+
+    ctx.globalAlpha = 1;
+  }, [
+    frames,
+    currentFrameIndex,
+    onionSkin,
+    onionPrevCount,
+    onionNextCount,
+    onionOpacity,
+    onionTinted,
+    isPlaying,
+    canvasWidth,
+    canvasHeight,
+  ]);
+
+  /* ---------------- artwork ---------------- */
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+    drawFrame(ctx, frames[currentFrameIndex]);
+    if (liveStroke) drawStroke(ctx, liveStroke, activeLayer?.opacity ?? 1);
+  }, [frames, currentFrameIndex, liveStroke, canvasWidth, canvasHeight, activeLayer?.opacity]);
 
-    const currentFrame = frames[currentFrameIndex];
-    if (currentFrame) {
-      currentFrame.layers.forEach(layer => {
-        if (!layer.visible) return;
-        layer.strokes.forEach(stroke => {
-          drawStroke(ctx, stroke, layer.opacity);
-        });
-      });
-    }
+  /* ---------------- coordinate helpers ---------------- */
 
-    if (currentStroke) {
-      drawStroke(ctx, currentStroke, 1);
-    }
-
-    if (textEditor) {
-      ctx.globalAlpha = 1;
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.font = `${brushSize}px ${fontFamily}`;
-      ctx.fillStyle = brushColor;
-      ctx.textBaseline = 'top';
-      ctx.fillText(textEditor.text + '|', textEditor.x, textEditor.y);
-      
-      const width = ctx.measureText(textEditor.text || 'T').width;
-      ctx.strokeStyle = '#ff4d79';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([5, 5]);
-      ctx.strokeRect(textEditor.x - 5, textEditor.y - 5, width + 15, brushSize + 10);
-      ctx.setLineDash([]);
-    }
-
-    ctx.globalAlpha = 1;
-    ctx.globalCompositeOperation = 'source-over';
-  }, [frames, currentFrameIndex, currentStroke, textEditor, brushColor, brushSize, fontFamily]);
-
-  const getCoordinates = (e: React.PointerEvent<HTMLCanvasElement>): Point => {
+  const toCanvas = useCallback((e: React.PointerEvent | PointerEvent | WheelEvent): Point => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
     return {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY,
+      x: ((e.clientX - rect.left) / rect.width) * canvasWidth,
+      y: ((e.clientY - rect.top) / rect.height) * canvasHeight,
     };
+  }, [canvasWidth, canvasHeight]);
+
+  /* ---------------- zoom on wheel, anchored at the cursor ---------------- */
+
+  useEffect(() => {
+    const el = outerRef.current;
+    const box = containerRef.current;
+    if (!el || !box) return;
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+
+      if (e.shiftKey) {
+        setPan(panX - e.deltaY, panY);
+        return;
+      }
+
+      const rect = box.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+
+      const nextZoom = Math.min(8, Math.max(0.2, zoom * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+      const nextTotal = fitScale * nextZoom;
+
+      // Keep the canvas point under the pointer pinned in place.
+      const qx = (e.clientX - cx - panX) / totalScale;
+      const qy = (e.clientY - cy - panY) / totalScale;
+      setPan(e.clientX - cx - qx * nextTotal, e.clientY - cy - qy * nextTotal);
+      setZoom(nextZoom);
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [zoom, panX, panY, fitScale, totalScale, setPan, setZoom]);
+
+  /* ---------------- text commit ---------------- */
+
+  // Committing straight from the current draft (rather than inside a state
+  // updater) keeps addStroke out of render, where StrictMode would double it.
+  const commitText = useCallback(() => {
+    if (!textDraft) return;
+    if (textDraft.value.trim()) {
+      addStroke({
+        points: [{ x: textDraft.x, y: textDraft.y }],
+        color: brushColor,
+        size: brushSize,
+        opacity: brushOpacity,
+        type: 'text',
+        text: textDraft.value,
+        fontFamily,
+      });
+    }
+    setTextDraft(null);
+  }, [textDraft, addStroke, brushColor, brushSize, brushOpacity, fontFamily]);
+
+  useEffect(() => {
+    if (textDraft) textInputRef.current?.focus();
+  }, [textDraft]);
+
+  // Note: switching tool or frame while a text box is open moves focus away
+  // from the textarea, and its onBlur commits the text — no extra sync needed.
+
+  /* ---------------- pointer handling ---------------- */
+
+  const beginPan = (e: React.PointerEvent) => {
+    panning.current = { startX: e.clientX, startY: e.clientY, panX, panY };
+    setIsPanning(true);
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const coords = getCoordinates(e);
+    // Middle mouse and Alt always pan, whatever tool is selected.
+    if (panMode || e.button === 1 || e.altKey) {
+      beginPan(e);
+      return;
+    }
+    if (e.button !== 0) return;
 
-    if (tool === 'text') {
-      if (textEditor) {
-        const canvas = canvasRef.current;
-        if (canvas) {
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.font = `${brushSize}px ${fontFamily}`;
-            const width = ctx.measureText(textEditor.text || 'T').width;
-            if (coords.x >= textEditor.x - 10 && coords.x <= textEditor.x + width + 20 &&
-                coords.y >= textEditor.y - 10 && coords.y <= textEditor.y + brushSize + 20) {
-                setIsDraggingText(true);
-                e.currentTarget.setPointerCapture(e.pointerId);
-                return;
-            }
-          }
+    const point = toCanvas(e);
+
+    if (tool === 'eyedropper') {
+      const ctx = canvasRef.current?.getContext('2d', { willReadFrequently: true });
+      if (ctx) {
+        const [r, g, b, a] = ctx.getImageData(Math.floor(point.x), Math.floor(point.y), 1, 1).data;
+        if (a > 0) {
+          setBrushColor(rgbToHex({ r, g, b }));
+          useStore.getState().setFillTransparent(false);
+          useStore.getState().toast('Colour picked');
         }
-        
-        if (textEditor.text.trim()) {
-           addStroke({
-             points: [{ x: textEditor.x, y: textEditor.y }],
-             color: brushColor,
-             size: brushSize,
-             type: 'text',
-             text: textEditor.text,
-             fontFamily: fontFamily
-           });
-        }
-        setTextEditor({ x: coords.x, y: coords.y, text: '' });
-      } else {
-        setTextEditor({ x: coords.x, y: coords.y, text: '' });
       }
+      setTool(useStore.getState().lastDrawTool);
       return;
     }
 
-    if (textEditor) {
-      if (textEditor.text.trim()) {
-         addStroke({
-           points: [{ x: textEditor.x, y: textEditor.y }],
-           color: brushColor,
-           size: brushSize,
-           type: 'text',
-           text: textEditor.text,
-           fontFamily: fontFamily
-         });
-      }
-      setTextEditor(null);
+    if (tool === 'text') {
+      if (textDraft) commitText();
+      setTextDraft({ x: point.x, y: point.y, value: '' });
+      return;
+    }
+
+    if (textDraft) commitText();
+    if (layerLocked) {
+      useStore.getState().toast('This layer is locked', 'error');
+      return;
     }
 
     if (tool === 'bucket') {
-      const newStroke: Stroke = {
-        points: [coords],
-        color: brushColor,
+      addStroke({
+        points: [point],
+        color: fillTransparent ? TRANSPARENT_FILL : brushColor,
         size: brushSize,
-        type: tool,
-      };
-      addStroke(newStroke);
-      
-      if (canvasRef.current && currentFrameIndex === 0) {
-        setTimeout(() => {
-          if (canvasRef.current) {
-            const thumb = generateThumbnail(canvasRef.current);
-            if (thumb) useStore.getState().setCurrentThumbnail(thumb);
-          }
-        }, 50);
-      }
+        opacity: brushOpacity,
+        type: 'bucket',
+      });
       return;
     }
 
-    setIsDrawing(true);
+    drawing.current = true;
     e.currentTarget.setPointerCapture(e.pointerId);
-    setCurrentStroke({
-      points: [coords],
+    setLive({
+      points: [{ ...point, p: e.pressure || 0.5 }],
       color: brushColor,
       size: brushSize,
-      type: tool,
+      opacity: brushOpacity,
+      type: tool as StrokeType,
+      ...(tool === 'shape' ? { shape: shapeKind, filled: shapeFilled } : {}),
     });
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const coords = getCoordinates(e);
+    const point = toCanvas(e);
+    setCursor(point);
 
-    if (isDraggingText && textEditor) {
-      setTextEditor({ ...textEditor, x: coords.x, y: coords.y });
+    if (panning.current) {
+      const p = panning.current;
+      setPan(p.panX + (e.clientX - p.startX), p.panY + (e.clientY - p.startY));
       return;
     }
 
-    if (!isDrawing || !currentStroke) return;
-    
-    if (useStore.getState().isRulerActive && currentStroke.points.length > 0) {
-      setCurrentStroke({
-        ...currentStroke,
-        points: [currentStroke.points[0], coords],
-      });
+    if (!drawing.current) return;
+
+    const prev = liveRef.current;
+    if (!prev) return;
+    const start = prev.points[0];
+    const pressure = e.pressure || 0.5;
+
+    // Shapes and the ruler are always defined by just their two endpoints.
+    if (prev.type === 'shape' || isRulerActive) {
+      const end = shiftHeld.current ? snapAngle(start, point) : point;
+      setLive({ ...prev, points: [start, { ...end, p: pressure }] });
     } else {
-      setCurrentStroke({
-        ...currentStroke,
-        points: [...currentStroke.points, coords],
-      });
+      setLive({ ...prev, points: [...prev.points, { ...point, p: pressure }] });
     }
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (isDraggingText) {
-      setIsDraggingText(false);
+    if (panning.current) {
+      panning.current = null;
+      setIsPanning(false);
       return;
     }
+    if (!drawing.current) return;
 
-    if (!isDrawing || !currentStroke) return;
-    setIsDrawing(false);
-    addStroke(currentStroke);
-    setCurrentStroke(null);
+    drawing.current = false;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
 
-    if (canvasRef.current && currentFrameIndex === 0) {
-      const thumb = generateThumbnail(canvasRef.current);
-      if (thumb) useStore.getState().setCurrentThumbnail(thumb);
+    const stroke = liveRef.current;
+    if (stroke) {
+      addStroke(stroke);
+      if (symmetry !== 'off') {
+        addStroke(mirrorStroke(stroke, symmetry, canvasWidth, canvasHeight));
+      }
     }
+    setLive(null);
   };
 
+  /* ---------------- cursor ---------------- */
+
+  const showBrushRing =
+    !panMode &&
+    cursor !== null &&
+    ['pen', 'pencil', 'brush', 'highlighter', 'eraser'].includes(tool);
+
+  const cssCursor = panMode
+    ? isPanning
+      ? 'grabbing'
+      : 'grab'
+    : tool === 'text'
+      ? 'text'
+      : tool === 'bucket' || tool === 'eyedropper'
+        ? 'copy'
+        : showBrushRing
+          ? 'none'
+          : 'crosshair';
+
   return (
-    <div className="w-full h-full flex items-center justify-center p-16 sm:p-24 md:p-32 pt-20 pb-48">
-      <div className="relative bg-white shadow-[0_4px_20px_rgba(0,0,0,0.05)] w-full h-full aspect-video max-w-[1920px] max-h-[1080px] border border-gray-200 rounded-sm">
+    <div ref={outerRef} className="relative h-full w-full overflow-hidden bg-mat">
+      <div
+        ref={containerRef}
+        className="absolute"
+        style={{
+          top: CHROME_INSET.top,
+          bottom: CHROME_INSET.bottom,
+          left: CHROME_INSET.left,
+          right: sidebarOpen ? SIDEBAR_INSET : CHROME_INSET.right,
+        }}
+      >
+      <div
+        ref={stageRef}
+        className="absolute left-1/2 top-1/2 origin-center"
+        style={{
+          width: canvasWidth,
+          height: canvasHeight,
+          // No transition here: pointer coordinates are read from the live
+          // bounding box, so an animating transform would offset strokes.
+          transform: `translate(calc(-50% + ${panX}px), calc(-50% + ${panY}px)) scale(${totalScale})`,
+        }}
+      >
+        {/* paper */}
+        <div
+          className={`absolute inset-0 rounded-[2px] ${
+            background === 'transparent' ? 'checkerboard' : 'bg-white'
+          }`}
+          style={{ boxShadow: '0 10px 60px rgba(10, 14, 40, 0.22)' }}
+        />
+
         <canvas
-          ref={onionSkinRef}
-          width={1920}
-          height={1080}
-          className="absolute inset-0 w-full h-full pointer-events-none opacity-20"
+          ref={bgRef}
+          width={canvasWidth}
+          height={canvasHeight}
+          className="pointer-events-none absolute inset-0 h-full w-full"
+        />
+        <canvas
+          ref={onionRef}
+          width={canvasWidth}
+          height={canvasHeight}
+          className="pointer-events-none absolute inset-0 h-full w-full"
         />
         <canvas
           ref={canvasRef}
-          width={1920}
-          height={1080}
+          width={canvasWidth}
+          height={canvasHeight}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
-          className="absolute inset-0 w-full h-full touch-none cursor-crosshair"
+          onPointerLeave={() => setCursor(null)}
+          onContextMenu={(e) => e.preventDefault()}
+          className="absolute inset-0 h-full w-full touch-none"
+          style={{ cursor: cssCursor }}
         />
+
+        {/* symmetry guide */}
+        {symmetry !== 'off' && (
+          <div
+            className="pointer-events-none absolute bg-brand/35"
+            style={
+              symmetry === 'vertical'
+                ? { left: '50%', top: 0, bottom: 0, width: Math.max(2, 2 / totalScale) }
+                : { top: '50%', left: 0, right: 0, height: Math.max(2, 2 / totalScale) }
+            }
+          />
+        )}
+
+        {/* live text box */}
+        {textDraft && (
+          <textarea
+            ref={textInputRef}
+            value={textDraft.value}
+            onChange={(e) => setTextDraft({ ...textDraft, value: e.target.value })}
+            onBlur={commitText}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === 'Escape' || (e.key === 'Enter' && !e.shiftKey)) {
+                e.preventDefault();
+                commitText();
+              }
+            }}
+            spellCheck={false}
+            placeholder="Type…"
+            className="absolute resize-none overflow-hidden rounded-md border-2 border-dashed border-brand bg-transparent p-0 outline-none"
+            style={{
+              left: textDraft.x,
+              top: textDraft.y,
+              color: brushColor,
+              fontFamily,
+              fontSize: brushSize,
+              lineHeight: 1.25,
+              minWidth: brushSize * 6,
+              height: brushSize * 1.5 * (textDraft.value.split('\n').length || 1),
+              caretColor: brushColor,
+            }}
+          />
+        )}
+
+        {/* brush size preview ring */}
+        {showBrushRing && cursor && (
+          <div
+            className="pointer-events-none absolute rounded-full border border-black/70 mix-blend-difference"
+            style={{
+              left: cursor.x,
+              top: cursor.y,
+              width: brushSize * (tool === 'highlighter' ? 2.5 : tool === 'eraser' ? 2 : 1),
+              height: brushSize * (tool === 'highlighter' ? 2.5 : tool === 'eraser' ? 2 : 1),
+              transform: 'translate(-50%, -50%)',
+              borderColor: '#ffffff',
+              borderWidth: Math.max(1, 1.5 / totalScale),
+            }}
+          />
+        )}
       </div>
+      </div>
+
+      {/* locked-layer notice */}
+      {layerLocked && !isPlaying && (
+        <div className="pointer-events-none absolute left-1/2 top-28 -translate-x-1/2 rounded-full bg-ink/85 px-4 py-2 text-xs font-bold text-app shadow-float">
+          Layer “{activeLayer?.name}” is locked
+        </div>
+      )}
     </div>
   );
 };
