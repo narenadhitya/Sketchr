@@ -127,6 +127,8 @@ export interface AppState {
   theme: ThemeMode;
   sidebarOpen: boolean;
   sidebarTab: SidebarTab;
+  referenceImage: string | null;
+  referenceOpacity: number;
   showExport: boolean;
   showShortcuts: boolean;
   showNewProject: boolean;
@@ -142,6 +144,8 @@ export interface AppState {
   toast: (message: string, kind?: Toast['kind']) => void;
   dismissToast: (id: string) => void;
   setPanel: (panel: PanelKey, open: boolean) => void;
+  setReferenceImage: (base64: string | null) => void;
+  setReferenceOpacity: (opacity: number) => void;
 
   initStorage: () => Promise<void>;
   connectWorkspace: () => Promise<void>;
@@ -379,6 +383,8 @@ export const useStore = create<AppState>((set, get) => ({
   theme: readTheme(),
   sidebarOpen: false,
   sidebarTab: 'color',
+  referenceImage: null,
+  referenceOpacity: 0.3,
   showExport: false,
   showShortcuts: false,
   showNewProject: false,
@@ -411,6 +417,8 @@ export const useStore = create<AppState>((set, get) => ({
   dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 
   setPanel: (panel, open) => set({ [panel]: open } as Pick<AppState, PanelKey>),
+  setReferenceImage: (referenceImage) => set({ referenceImage }),
+  setReferenceOpacity: (referenceOpacity) => set({ referenceOpacity }),
 
   setHomeSearch: (homeSearch) => set({ homeSearch }),
   setHomeSort: (homeSort) => set({ homeSort }),

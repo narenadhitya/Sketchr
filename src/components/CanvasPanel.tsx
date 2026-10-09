@@ -5,11 +5,13 @@ import {
   FlipHorizontal2,
   FlipVertical2,
   Film,
+  ImagePlus,
   Layers,
   PenLine,
   Ruler,
   Scan,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
 import { useStore } from '../store';
 import type { BackgroundKind } from '../store';
@@ -72,6 +74,10 @@ const CanvasPanel: React.FC = () => {
   const canvasHeight = useStore((s) => s.canvasHeight);
   const fps = useStore((s) => s.fps);
   const toast = useStore((s) => s.toast);
+  const referenceImage = useStore((s) => s.referenceImage);
+  const setReferenceImage = useStore((s) => s.setReferenceImage);
+  const referenceOpacity = useStore((s) => s.referenceOpacity);
+  const setReferenceOpacity = useStore((s) => s.setReferenceOpacity);
 
   const frame = frames[currentFrameIndex];
   const layer = frame?.layers[activeLayerIndex];
@@ -219,6 +225,54 @@ const CanvasPanel: React.FC = () => {
             <FlipVertical2 size={13} />
             Flip down
           </button>
+        </div>
+      </Section>
+
+      <Section title="Reference Image">
+        <div className="space-y-3">
+          {referenceImage ? (
+            <div className="space-y-3">
+              <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-line bg-panel-2">
+                <img src={referenceImage} alt="Reference" className="h-full w-full object-contain opacity-50" />
+                <button
+                  type="button"
+                  onClick={() => setReferenceImage(null)}
+                  className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur-sm transition-colors hover:bg-danger"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+              <Slider
+                label="Opacity"
+                value={Math.round(referenceOpacity * 100)}
+                min={5}
+                max={100}
+                suffix="%"
+                onChange={(v) => setReferenceOpacity(v / 100)}
+              />
+            </div>
+          ) : (
+            <label className="flex h-20 cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-line-2 text-ink-3 transition-colors hover:border-brand hover:bg-brand-soft hover:text-brand">
+              <ImagePlus size={18} />
+              <span className="text-[11px] font-bold">Upload image</span>
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = (ev) => {
+                    if (typeof ev.target?.result === 'string') {
+                      setReferenceImage(ev.target.result);
+                    }
+                  };
+                  reader.readAsDataURL(file);
+                }}
+              />
+            </label>
+          )}
         </div>
       </Section>
 

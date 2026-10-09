@@ -87,6 +87,8 @@ const DrawingCanvas: React.FC = () => {
   const canvasWidth = useStore((s) => s.canvasWidth);
   const canvasHeight = useStore((s) => s.canvasHeight);
   const background = useStore((s) => s.background);
+  const referenceImage = useStore((s) => s.referenceImage);
+  const referenceOpacity = useStore((s) => s.referenceOpacity);
   const zoom = useStore((s) => s.zoom);
   const panX = useStore((s) => s.panX);
   const panY = useStore((s) => s.panY);
@@ -472,6 +474,15 @@ const DrawingCanvas: React.FC = () => {
           }`}
           style={{ boxShadow: '0 10px 60px rgba(10, 14, 40, 0.22)' }}
         />
+        
+        {referenceImage && (
+          <img
+            src={referenceImage}
+            alt=""
+            className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+            style={{ opacity: referenceOpacity }}
+          />
+        )}
 
         <canvas
           ref={bgRef}

@@ -223,8 +223,8 @@ const Timeline: React.FC = () => {
 
       {/* ---------------- centre: frame track ---------------- */}
       <div className="flex min-w-0 flex-1 flex-col rounded-3xl border border-line bg-panel/90 shadow-float backdrop-blur-xl">
-        <div className="flex items-center justify-between px-4 pt-2.5">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-4 px-4 pt-2.5">
+          <div className="flex shrink-0 items-center gap-2">
             <span className="text-[10px] font-extrabold uppercase tracking-widest text-ink-3">
               Frames
             </span>
@@ -232,7 +232,20 @@ const Timeline: React.FC = () => {
               {currentFrameIndex + 1} / {frames.length}
             </span>
           </div>
-          <div className="tabular flex items-center gap-1 text-[10px] font-bold text-ink-3">
+          
+          <input 
+            type="range"
+            min={0}
+            max={Math.max(0, frames.length - 1)}
+            value={currentFrameIndex}
+            onChange={(e) => {
+              setPlaying(false);
+              setCurrentFrame(parseInt(e.target.value));
+            }}
+            className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-line-2 outline-none [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-brand"
+          />
+
+          <div className="tabular shrink-0 flex items-center gap-1 text-[10px] font-bold text-ink-3">
             <Clock size={11} />
             {duration.toFixed(2)}s
           </div>
