@@ -181,7 +181,7 @@ export interface AppState {
   toggleRuler: () => void;
   setSymmetry: (mode: AppState['symmetry']) => void;
 
-  addFrame: () => void;
+  addFrame: (append?: boolean) => void;
   duplicateFrame: () => void;
   deleteFrame: (index: number) => void;
   moveFrame: (from: number, to: number) => void;
@@ -785,7 +785,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   /* ---------------- frames ---------------- */
 
-  addFrame: () =>
+  addFrame: (append = false) =>
     set((state) =>
       withHistory(state, (frames) => {
         const blank = createEmptyFrame();
@@ -795,8 +795,9 @@ export const useStore = create<AppState>((set, get) => ({
           blank.layers = source.layers.map((l) => ({ ...createLayer(l.name), opacity: l.opacity }));
         }
         const next = [...frames];
-        next.splice(state.currentFrameIndex + 1, 0, blank);
-        return { frames: next, currentFrameIndex: state.currentFrameIndex + 1 };
+        const targetIndex = append ? frames.length : state.currentFrameIndex + 1;
+        next.splice(targetIndex, 0, blank);
+        return { frames: next, currentFrameIndex: targetIndex };
       }),
     ),
 

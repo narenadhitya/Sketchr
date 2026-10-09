@@ -330,7 +330,7 @@ const Timeline: React.FC = () => {
             <Tooltip label="New frame" hint="A">
               <button
                 type="button"
-                onClick={addFrame}
+                onClick={() => addFrame(true)}
                 style={aspectStyle}
                 className="flex h-[4.25rem] items-center justify-center rounded-xl border-2 border-dashed border-line-2 text-ink-3 transition-colors hover:border-brand hover:bg-brand-soft hover:text-brand"
               >
