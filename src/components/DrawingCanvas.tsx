@@ -89,6 +89,7 @@ const DrawingCanvas: React.FC = () => {
   const background = useStore((s) => s.background);
   const referenceImage = useStore((s) => s.referenceImage);
   const referenceOpacity = useStore((s) => s.referenceOpacity);
+  const strokeSmoothing = useStore((s) => s.strokeSmoothing);
   const zoom = useStore((s) => s.zoom);
   const panX = useStore((s) => s.panX);
   const panY = useStore((s) => s.panY);
@@ -400,7 +401,20 @@ const DrawingCanvas: React.FC = () => {
       const end = shiftHeld.current ? snapAngle(start, point) : point;
       setLive({ ...prev, points: [start, { ...end, p: pressure }] });
     } else {
-      setLive({ ...prev, points: [...prev.points, { ...point, p: pressure }] });
+      let nextPoint = { ...point, p: pressure };
+      
+      // Apply Exponential Moving Average (EMA) smoothing if enabled
+      if (strokeSmoothing > 0 && prev.points.length > 0) {
+        // Map 0-100 to a sensible alpha (0.9 to 0.15)
+        // Higher smoothing = lower alpha (slower movement towards target)
+        const alpha = 1 - (strokeSmoothing / 100) * 0.85;
+        const last = prev.points[prev.points.length - 1];
+        nextPoint.x = last.x + (point.x - last.x) * alpha;
+        nextPoint.y = last.y + (point.y - last.y) * alpha;
+        nextPoint.p = (last.p ?? 0.5) + (pressure - (last.p ?? 0.5)) * alpha;
+      }
+      
+      setLive({ ...prev, points: [...prev.points, nextPoint] });
     }
   };
 

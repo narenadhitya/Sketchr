@@ -129,6 +129,7 @@ export interface AppState {
   sidebarTab: SidebarTab;
   referenceImage: string | null;
   referenceOpacity: number;
+  strokeSmoothing: number;
   showExport: boolean;
   showShortcuts: boolean;
   showNewProject: boolean;
@@ -146,6 +147,7 @@ export interface AppState {
   setPanel: (panel: PanelKey, open: boolean) => void;
   setReferenceImage: (base64: string | null) => void;
   setReferenceOpacity: (opacity: number) => void;
+  setStrokeSmoothing: (smoothing: number) => void;
 
   initStorage: () => Promise<void>;
   connectWorkspace: () => Promise<void>;
@@ -385,6 +387,7 @@ export const useStore = create<AppState>((set, get) => ({
   sidebarTab: 'color',
   referenceImage: null,
   referenceOpacity: 0.3,
+  strokeSmoothing: 50,
   showExport: false,
   showShortcuts: false,
   showNewProject: false,
@@ -419,6 +422,7 @@ export const useStore = create<AppState>((set, get) => ({
   setPanel: (panel, open) => set({ [panel]: open } as Pick<AppState, PanelKey>),
   setReferenceImage: (referenceImage) => set({ referenceImage }),
   setReferenceOpacity: (referenceOpacity) => set({ referenceOpacity }),
+  setStrokeSmoothing: (strokeSmoothing) => set({ strokeSmoothing }),
 
   setHomeSearch: (homeSearch) => set({ homeSearch }),
   setHomeSort: (homeSort) => set({ homeSort }),

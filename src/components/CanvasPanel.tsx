@@ -55,6 +55,8 @@ const CanvasPanel: React.FC = () => {
   const resetView = useStore((s) => s.resetView);
   const symmetry = useStore((s) => s.symmetry);
   const setSymmetry = useStore((s) => s.setSymmetry);
+  const strokeSmoothing = useStore((s) => s.strokeSmoothing);
+  const setStrokeSmoothing = useStore((s) => s.setStrokeSmoothing);
   const isRulerActive = useStore((s) => s.isRulerActive);
   const toggleRuler = useStore((s) => s.toggleRuler);
   const onionSkin = useStore((s) => s.onionSkin);
@@ -160,6 +162,14 @@ const CanvasPanel: React.FC = () => {
               ]}
             />
           </div>
+          <Slider
+            label="Stabilizer"
+            value={strokeSmoothing}
+            min={0}
+            max={100}
+            suffix="%"
+            onChange={setStrokeSmoothing}
+          />
         </div>
       </Section>
 
