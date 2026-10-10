@@ -14,7 +14,6 @@ import {
   Repeat,
   SkipBack,
   SkipForward,
-  SkipForward,
   Sparkles,
   Trash2,
   Wand2,
